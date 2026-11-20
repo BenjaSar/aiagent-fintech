@@ -1,0 +1,1391 @@
+﻿
+
+        frost-core 3.0.0 - Docs.rs
+
+                    Docs.rs
+
+                frost-core-3.0.0
+
+                    Platform
+
+            x86_64-unknown-linux-gnu
+
+                    Feature flags
+
+                        docs.rs
+
+ About docs.rs
+
+ Badges
+
+ Builds
+
+ Metadata
+
+ Shorthand URLs
+
+ Download
+
+ Rustdoc JSON
+
+ Build queue
+
+ Privacy policy
+
+                        Rust
+
+Rust website
+
+The Book
+
+Standard Library API Reference
+
+Rust by Example
+
+The Cargo Guide
+
+Clippy Documentation
+
+                    frost-core 3.0.0
+
+Types and traits to support implementing Flexible Round-Optimized Schnorr Threshold signature schemes (FROST).
+
+                                 Crate
+
+                                 Source
+
+                                 Builds
+
+                                Feature flags
+
+                     Documentation
+
+                                 Hide files
+
+                                 ..
+
+                                    dkg.rs
+
+                                    refresh.rs
+
+                                    repairable.rs
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+200
+201
+202
+203
+204
+205
+206
+207
+208
+209
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+240
+241
+242
+243
+244
+245
+246
+247
+248
+249
+250
+251
+252
+253
+254
+255
+256
+257
+258
+259
+260
+261
+262
+263
+264
+265
+266
+267
+268
+269
+270
+271
+272
+273
+274
+275
+276
+277
+278
+279
+280
+281
+282
+283
+284
+285
+286
+287
+288
+289
+290
+291
+292
+293
+294
+295
+296
+297
+298
+299
+300
+301
+302
+303
+304
+305
+306
+307
+308
+309
+310
+311
+312
+313
+314
+315
+316
+317
+318
+319
+320
+321
+322
+323
+324
+325
+326
+327
+328
+329
+330
+331
+332
+333
+334
+335
+336
+337
+338
+339
+340
+341
+342
+343
+344
+345
+346
+347
+348
+349
+350
+351
+352
+353
+354
+355
+356
+357
+358
+359
+360
+361
+362
+363
+364
+365
+366
+367
+368
+369
+370
+371
+372
+373
+374
+375
+376
+377
+378
+379
+380
+381
+382
+383
+384
+385
+386
+387
+388
+389
+390
+391
+392
+393
+394
+395
+396
+397
+398
+399
+400
+401
+402
+403
+404
+405
+406
+407
+408
+409
+410
+411
+412
+413
+414
+415
+416
+417
+418
+419
+420
+421
+422
+423
+424
+425
+426
+427
+428
+429
+430
+431
+432
+433
+434
+435
+436
+437
+438
+439
+440
+441
+442
+443
+444
+445
+446
+447
+448
+449
+450
+451
+452
+453
+454
+455
+456
+457
+458
+459
+460
+461
+462
+463
+464
+465
+466
+467
+468
+469
+470
+471
+472
+473
+474
+475
+476
+477
+478
+479
+480
+481
+482
+483
+484
+485
+486
+487
+488
+489
+490
+491
+492
+493
+494
+495
+496
+497
+498
+499
+500
+501
+502
+503
+504
+505
+506
+507
+508
+509
+510
+511
+512
+513
+514
+515
+516
+517
+518
+519
+520
+521
+522
+523
+524
+525
+526
+527
+528
+529
+530
+531
+532
+533
+534
+535
+536
+537
+538
+539
+540
+541
+542
+543
+544
+545
+546
+547
+548
+549
+550
+551
+552
+553
+554
+555
+556
+557
+558
+559
+560
+561
+562
+563
+564
+565
+566
+567
+568
+569
+570
+571
+572
+573
+574
+575
+576
+577
+578
+579
+580
+581
+582
+583
+584
+585
+586
+587
+588
+589
+590
+591
+592
+593
+594
+595
+596
+597
+598
+599
+600
+601
+602
+603
+604
+605
+606
+607
+608
+609
+610
+611
+612
+613
+614
+615
+616
+617
+618
+619
+620
+621
+622
+623
+624
+625
+626
+627
+628
+629
+630
+631
+632
+633
+634
+635
+636
+637
+638
+639
+640
+641
+642
+643
+644
+645
+646
+647
+648
+649
+650
+651
+652
+653
+654
+655
+656
+657
+658
+
+//! Distributed Key Generation functions and structures.
+//!
+//! The DKG module supports generating FROST key shares in a distributed manner,
+//! without a trusted dealer, via two rounds of communication between all
+//! participants (with one round requiring a broadcast channel, so totalling
+//! three rounds of communication if using echo broadcast).
+//!
+//! For a higher level tutorial on how to use it, refer to the [ZF FROST
+//! Book](https://frost.zfnd.org/tutorial/dkg.html).
+//!
+//! This implements FROST KeyGen from the original [FROST paper], specifically
+//! Figure 1. This protocol is a variant of [Pedersen's DKG] that additionally
+//! requires each participant to demonstrate knowledge of their secret by providing
+//! other participants with proof in zero knowledge, instantiated as a Schnorr signature,
+//! to protect against rogue-key attacks in the setting where `t ≥ n/2`.
+//!
+//! In Pedersen's DKG, each of the `n` participants executes [Feldman's
+//! Verifiable Secret Sharing (VSS)][Feldman's VSS] as the dealer in parallel,
+//! and derives their secret share as the sum of the shares received from each
+//! of the `n` VSS executions.
+//!
+//! As required for any multi-party protocol using Feldman's VSS, the key
+//! generation stage in FROST requires participants to maintain a consistent
+//! view of the public commitments to the secret polynomial coefficients. This
+//! DKG protocol requires participants to broadcast the commitment values
+//! honestly (e.g., participants do not provide different commitment values to a
+//! subset of participants) over a _[secure broadcast channel]_.
+//!
+//! For more details and an example, see the ciphersuite-specific crates, e.g.
+//! [`frost_ristretto255::keys::dkg`](../../../../frost_ristretto255/keys/dkg).
+//!
+//! [FROST paper]: https://eprint.iacr.org/2020/852.pdf
+//! [Pedersen's DKG]: https://link.springer.com/chapter/10.1007/3-540-46416-6_47
+//! [Feldman's VSS]: https://www.cs.umd.edu/~gasarch/TOPICS/secretsharing/feldmanVSS.pdf
+//! [secure broadcast channel]: https://frost.zfnd.org/terminology.html#broadcast-channel
+
+use core::iter;
+
+use alloc::collections::BTreeMap;
+
+use rand_core::{CryptoRng, RngCore};
+
+use crate::{
+    Challenge, Ciphersuite, Element, Error, Field, Group, Header, Identifier, Scalar, Signature,
+    SigningKey, VerifyingKey,
+};
+
+#[cfg(feature = "serialization")]
+use crate::serialization::{Deserialize, Serialize};
+
+use super::{
+    evaluate_polynomial, generate_coefficients, generate_secret_polynomial,
+    validate_num_of_signers, KeyPackage, PublicKeyPackage, SecretShare, SigningShare,
+    VerifiableSecretSharingCommitment,
+};
+
+/// DKG Round 1 structures.
+pub mod round1 {
+    use alloc::vec::Vec;
+    use derive_getters::Getters;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    use super::*;
+
+    use crate::serialization::SerializableScalar;
+    #[cfg(feature = "serialization")]
+    use crate::serialization::{Deserialize, Serialize};
+
+    /// The package that must be broadcast by each participant to all other participants
+    /// between the first and second parts of the DKG protocol (round 1).
+    #[derive(Clone, Debug, PartialEq, Eq, Getters)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde", serde(bound = "C: Ciphersuite"))]
+    #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+    pub struct Package<C: Ciphersuite> {
+        /// Serialization header
+        #[getter(skip)]
+        pub(crate) header: Header<C>,
+        /// The public commitment from the participant (C_i)
+        pub(crate) commitment: VerifiableSecretSharingCommitment<C>,
+        /// The proof of knowledge of the temporary secret (σ_i = (R_i, μ_i))
+        pub(crate) proof_of_knowledge: Signature<C>,
+    }
+
+    impl<C> Package<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Create a new [`Package`] instance.
+        pub fn new(
+            commitment: VerifiableSecretSharingCommitment<C>,
+            proof_of_knowledge: Signature<C>,
+        ) -> Self {
+            Self {
+                header: Header::default(),
+                commitment,
+                proof_of_knowledge,
+            }
+        }
+    }
+
+    #[cfg(feature = "serialization")]
+    impl<C> Package<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Serialize the struct into a Vec.
+        pub fn serialize(&self) -> Result<Vec<u8>, Error<C>> {
+            Serialize::serialize(&self)
+        }
+
+        /// Deserialize the struct from a slice of bytes.
+        pub fn deserialize(bytes: &[u8]) -> Result<Self, Error<C>> {
+            Deserialize::deserialize(bytes)
+        }
+    }
+
+    /// The secret package that must be kept in memory by the participant
+    /// between the first and second parts of the DKG protocol (round 1).
+    ///
+    /// # Security
+    ///
+    /// This package MUST NOT be sent to other participants!
+    #[derive(Clone, PartialEq, Eq, Getters, Zeroize, ZeroizeOnDrop)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde", serde(bound = "C: Ciphersuite"))]
+    #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+    pub struct SecretPackage<C: Ciphersuite> {
+        /// The identifier of the participant holding the secret.
+        #[zeroize(skip)]
+        pub(crate) identifier: Identifier<C>,
+        /// Coefficients of the temporary secret polynomial for the participant.
+        /// These are (a_{i0}, ..., a_{i(t−1)})) which define the polynomial f_i(x)
+        #[getter(skip)]
+        pub(crate) coefficients: Vec<SerializableScalar<C>>,
+        /// The public commitment for the participant (C_i)
+        #[zeroize(skip)]
+        pub(crate) commitment: VerifiableSecretSharingCommitment<C>,
+        /// The minimum number of signers.
+        pub(crate) min_signers: u16,
+        /// The total number of signers.
+        pub(crate) max_signers: u16,
+    }
+
+    impl<C> SecretPackage<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Create a new Secret Package. This should be called only if
+        /// custom serialization is required; run the DKG to create
+        /// a valid SecretPackage.
+        pub fn new(
+            identifier: Identifier<C>,
+            coefficients: Vec<Scalar<C>>,
+            commitment: VerifiableSecretSharingCommitment<C>,
+            min_signers: u16,
+            max_signers: u16,
+        ) -> Self {
+            Self {
+                identifier,
+                coefficients: coefficients.into_iter().map(SerializableScalar).collect(),
+                commitment,
+                min_signers,
+                max_signers,
+            }
+        }
+
+        /// Returns the secret coefficients.
+        #[cfg_attr(feature = "internals", visibility::make(pub))]
+        pub(crate) fn coefficients(&self) -> Vec<Scalar<C>> {
+            self.coefficients.iter().map(|s| s.0).collect()
+        }
+    }
+
+    #[cfg(feature = "serialization")]
+    impl<C> SecretPackage<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Serialize the struct into a Vec.
+        pub fn serialize(&self) -> Result<Vec<u8>, Error<C>> {
+            Serialize::serialize(&self)
+        }
+
+        /// Deserialize the struct from a slice of bytes.
+        pub fn deserialize(bytes: &[u8]) -> Result<Self, Error<C>> {
+            Deserialize::deserialize(bytes)
+        }
+    }
+
+    impl<C> core::fmt::Debug for SecretPackage<C>
+    where
+        C: Ciphersuite,
+    {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("SecretPackage")
+                .field("identifier", &self.identifier)
+                .field("coefficients", &"<redacted>")
+                .field("commitment", &self.commitment)
+                .field("min_signers", &self.min_signers)
+                .field("max_signers", &self.max_signers)
+                .finish()
+        }
+    }
+}
+
+/// DKG Round 2 structures.
+pub mod round2 {
+    use derive_getters::Getters;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    #[cfg(feature = "serialization")]
+    use alloc::vec::Vec;
+
+    use crate::serialization::SerializableScalar;
+
+    use super::*;
+
+    /// A package that must be sent by each participant to some other participants
+    /// in Round 2 of the DKG protocol. Note that there is one specific package
+    /// for each specific recipient, in contrast to Round 1.
+    ///
+    /// # Security
+    ///
+    /// The package must be sent on an *confidential* and *authenticated* channel.
+    #[derive(Clone, Debug, PartialEq, Eq, Getters, Zeroize, ZeroizeOnDrop)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde", serde(bound = "C: Ciphersuite"))]
+    #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+    pub struct Package<C: Ciphersuite> {
+        /// Serialization header
+        #[getter(skip)]
+        pub(crate) header: Header<C>,
+        /// The secret share being sent.
+        pub(crate) signing_share: SigningShare<C>,
+    }
+
+    impl<C> Package<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Create a new [`Package`] instance.
+        pub fn new(signing_share: SigningShare<C>) -> Self {
+            Self {
+                header: Header::default(),
+                signing_share,
+            }
+        }
+    }
+
+    #[cfg(feature = "serialization")]
+    impl<C> Package<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Serialize the struct into a Vec.
+        pub fn serialize(&self) -> Result<Vec<u8>, Error<C>> {
+            Serialize::serialize(&self)
+        }
+
+        /// Deserialize the struct from a slice of bytes.
+        pub fn deserialize(bytes: &[u8]) -> Result<Self, Error<C>> {
+            Deserialize::deserialize(bytes)
+        }
+    }
+
+    /// The secret package that must be kept in memory by the participant
+    /// between the second and third parts of the DKG protocol (round 2).
+    ///
+    /// # Security
+    ///
+    /// This package MUST NOT be sent to other participants!
+    #[derive(Clone, PartialEq, Eq, Getters, Zeroize, ZeroizeOnDrop)]
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[cfg_attr(feature = "serde", serde(bound = "C: Ciphersuite"))]
+    #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+    pub struct SecretPackage<C: Ciphersuite> {
+        /// The identifier of the participant holding the secret.
+        #[zeroize(skip)]
+        pub(crate) identifier: Identifier<C>,
+        /// The public commitment from the participant (C_i)
+        #[zeroize(skip)]
+        pub(crate) commitment: VerifiableSecretSharingCommitment<C>,
+        /// The participant's own secret share (f_i(i)).
+        #[getter(skip)]
+        pub(crate) secret_share: SerializableScalar<C>,
+        /// The minimum number of signers.
+        pub(crate) min_signers: u16,
+        /// The total number of signers.
+        pub(crate) max_signers: u16,
+    }
+
+    impl<C> SecretPackage<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Create a new SecretPackage. Use this only if custom serialization is
+        /// required; run the DKG to create a valid SecretPackage.
+        pub fn new(
+            identifier: Identifier<C>,
+            commitment: VerifiableSecretSharingCommitment<C>,
+            secret_share: Scalar<C>,
+            min_signers: u16,
+            max_signers: u16,
+        ) -> Self {
+            Self {
+                identifier,
+                commitment,
+                secret_share: SerializableScalar(secret_share),
+                min_signers,
+                max_signers,
+            }
+        }
+
+        /// Return the SecretShare.
+        pub fn secret_share(&self) -> Scalar<C> {
+            self.secret_share.0
+        }
+    }
+
+    #[cfg(feature = "serialization")]
+    impl<C> SecretPackage<C>
+    where
+        C: Ciphersuite,
+    {
+        /// Serialize the struct into a Vec.
+        pub fn serialize(&self) -> Result<Vec<u8>, Error<C>> {
+            Serialize::serialize(&self)
+        }
+
+        /// Deserialize the struct from a slice of bytes.
+        pub fn deserialize(bytes: &[u8]) -> Result<Self, Error<C>> {
+            Deserialize::deserialize(bytes)
+        }
+    }
+
+    impl<C> core::fmt::Debug for SecretPackage<C>
+    where
+        C: Ciphersuite,
+    {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("SecretPackage")
+                .field("identifier", &self.identifier)
+                .field("commitment", &self.commitment)
+                .field("secret_share", &"<redacted>")
+                .field("min_signers", &self.min_signers)
+                .field("max_signers", &self.max_signers)
+                .finish()
+        }
+    }
+}
+
+/// Performs the first part of the distributed key generation protocol
+/// for the given participant.
+///
+/// It returns the [`round1::SecretPackage`] that must be kept in memory
+/// by the participant for the other steps, and the [`round1::Package`] that
+/// must be sent to each other participant in the DKG run.
+pub fn part1<C: Ciphersuite, R: RngCore + CryptoRng>(
+    identifier: Identifier<C>,
+    max_signers: u16,
+    min_signers: u16,
+    mut rng: R,
+) -> Result<(round1::SecretPackage<C>, round1::Package<C>), Error<C>> {
+    validate_num_of_signers::<C>(min_signers, max_signers)?;
+
+    let secret: SigningKey<C> = SigningKey::new(&mut rng);
+
+    // Round 1, Step 1
+    //
+    // > Every participant P_i samples t random values (a_{i0}, ..., a_{i(t−1)}) ← Z_q
+    //
+    // Round 1, Step 3
+    //
+    // > Every participant P_i computes a public commitment
+    // > C⃗_i = 〈φ_{i0}, ..., φ_{i(t−1)}〉, where φ_{ij} = g^{a_{ij}}, 0 ≤ j ≤ t − 1
+    let coefficients = generate_coefficients::<C, R>(min_signers as usize - 1, &mut rng);
+
+    let (coefficients, commitment) =
+        generate_secret_polynomial(&secret, max_signers, min_signers, coefficients)?;
+    let proof_of_knowledge =
+        compute_proof_of_knowledge(identifier, &coefficients, &commitment, &mut rng)?;
+
+    let secret_package = round1::SecretPackage::new(
+        identifier,
+        coefficients,
+        commitment.clone(),
+        min_signers,
+        max_signers,
+    );
+    let package = round1::Package {
+        header: Header::default(),
+        commitment,
+        proof_of_knowledge,
+    };
+
+    Ok((secret_package, package))
+}
+
+/// Generates the challenge for the proof of knowledge to a secret for the DKG.
+fn challenge<C>(
+    identifier: Identifier<C>,
+    verifying_key: &VerifyingKey<C>,
+    R: &Element<C>,
+) -> Result<Challenge<C>, Error<C>>
+where
+    C: Ciphersuite,
+{
+    let mut preimage = vec![];
+
+    preimage.extend_from_slice(identifier.serialize().as_ref());
+    preimage.extend_from_slice(<C::Group>::serialize(&verifying_key.to_element())?.as_ref());
+    preimage.extend_from_slice(<C::Group>::serialize(R)?.as_ref());
+
+    Ok(Challenge(
+        C::HDKG(&preimage[..]).ok_or(Error::DKGNotSupported)?,
+    ))
+}
+
+/// Compute the proof of knowledge of the secret coefficients used to generate
+/// the public secret sharing commitment.
+#[cfg_attr(feature = "internals", visibility::make(pub))]
+pub(crate) fn compute_proof_of_knowledge<C: Ciphersuite, R: RngCore + CryptoRng>(
+    identifier: Identifier<C>,
+    coefficients: &[Scalar<C>],
+    commitment: &VerifiableSecretSharingCommitment<C>,
+    mut rng: R,
+) -> Result<Signature<C>, Error<C>> {
+    // Round 1, Step 2
+    //
+    // > Every P_i computes a proof of knowledge to the corresponding secret
+    // > a_{i0} by calculating σ_i = (R_i, μ_i), such that k ← Z_q, R_i = g^k,
+    // > c_i = H(i, Φ, g^{a_{i0}} , R_i), μ_i = k + a_{i0} · c_i, with Φ being
+    // > a context string to prevent replay attacks.
+    let (k, R_i) = <C>::generate_nonce(&mut rng);
+    let c_i = challenge::<C>(identifier, &commitment.verifying_key()?, &R_i)?;
+    let a_i0 = *coefficients.first().ok_or(Error::InvalidCoefficients)?;
+    let mu_i = k + a_i0 * c_i.0;
+    Ok(Signature { R: R_i, z: mu_i })
+}
+
+/// Verifies the proof of knowledge of the secret coefficients used to generate the
+/// public secret sharing commitment.
+#[cfg_attr(feature = "internals", visibility::make(pub))]
+pub(crate) fn verify_proof_of_knowledge<C: Ciphersuite>(
+    identifier: Identifier<C>,
+    commitment: &VerifiableSecretSharingCommitment<C>,
+    proof_of_knowledge: &Signature<C>,
+) -> Result<(), Error<C>> {
+    // Round 1, Step 5
+    //
+    // > Upon receiving C⃗_ℓ, σ_ℓ from participants 1 ≤ ℓ ≤ n, ℓ ≠ i, participant
+    // > P_i verifies σ_ℓ = (R_ℓ, μ_ℓ), aborting on failure, by checking
+    // > R_ℓ ? ≟ g^{μ_ℓ} · φ^{-c_ℓ}_{ℓ0}, where c_ℓ = H(ℓ, Φ, φ_{ℓ0}, R_ℓ).
+    let ell = identifier;
+    let R_ell = proof_of_knowledge.R;
+    let mu_ell = proof_of_knowledge.z;
+    let phi_ell0 = commitment.verifying_key()?;
+    let c_ell = challenge::<C>(ell, &phi_ell0, &R_ell)?;
+    if R_ell != <C::Group>::generator() * mu_ell - phi_ell0.to_element() * c_ell.0 {
+        return Err(Error::InvalidProofOfKnowledge { culprit: ell });
+    }
+    Ok(())
+}
+
+/// Performs the second part of the distributed key generation protocol for the
+/// participant holding the given [`round1::SecretPackage`], given the received
+/// [`round1::Package`]s received from the other participants.
+///
+/// `round1_packages` maps the identifier of each other participant to the
+/// [`round1::Package`] they sent to the current participant (the owner of
+/// `secret_package`). These identifiers must come from whatever mapping the
+/// participant has between communication channels and participants, i.e. they
+/// must have assurance that the [`round1::Package`] came from the participant
+/// with that identifier.
+///
+/// It returns the [`round2::SecretPackage`] that must be kept in memory by the
+/// participant for the final step, and the map of [`round2::Package`]s that
+/// must be sent to each other participant who has the given identifier in the
+/// map key.
+pub fn part2<C: Ciphersuite>(
+    secret_package: round1::SecretPackage<C>,
+    round1_packages: &BTreeMap<Identifier<C>, round1::Package<C>>,
+) -> Result<
+    (
+        round2::SecretPackage<C>,
+        BTreeMap<Identifier<C>, round2::Package<C>>,
+    ),
+    Error<C>,
+> {
+    if round1_packages.len() != (secret_package.max_signers - 1) as usize {
+        return Err(Error::IncorrectNumberOfPackages);
+    }
+
+    if round1_packages.contains_key(&secret_package.identifier) {
+        return Err(Error::UnknownIdentifier);
+    }
+
+    for package in round1_packages.values() {
+        if package.commitment.min_signers() != secret_package.min_signers {
+            return Err(Error::IncorrectNumberOfCommitments);
+        }
+    }
+
+    let mut round2_packages = BTreeMap::new();
+
+    for (sender_identifier, round1_package) in round1_packages {
+        let ell = *sender_identifier;
+        // Round 1, Step 5
+        verify_proof_of_knowledge(
+            ell,
+            &round1_package.commitment,
+            &round1_package.proof_of_knowledge,
+        )?;
+
+        // Round 2, Step 1
+        //
+        // > Each P_i securely sends to each other participant P_ℓ a secret share (ℓ, f_i(ℓ)),
+        // > deleting f_i and each share afterward except for (i, f_i(i)),
+        // > which they keep for themselves.
+        let signing_share = SigningShare::from_coefficients(&secret_package.coefficients(), ell);
+
+        round2_packages.insert(
+            ell,
+            round2::Package {
+                header: Header::default(),
+                signing_share,
+            },
+        );
+    }
+    let fii = evaluate_polynomial(secret_package.identifier, &secret_package.coefficients());
+    Ok((
+        round2::SecretPackage::new(
+            secret_package.identifier,
+            secret_package.commitment.clone(),
+            fii,
+            secret_package.min_signers,
+            secret_package.max_signers,
+        ),
+        round2_packages,
+    ))
+}
+
+/// Performs the third and final part of the distributed key generation protocol
+/// for the participant holding the given [`round2::SecretPackage`], given the
+/// received [`round1::Package`]s and [`round2::Package`]s received from the
+/// other participants.
+///
+/// `round1_packages` must be the same used in [`part2()`].
+///
+/// `round2_packages` maps the identifier of each other participant to the
+/// [`round2::Package`] they sent to the current participant (the owner of
+/// `secret_package`). These identifiers must come from whatever mapping the
+/// participant has between communication channels and participants, i.e. they
+/// must have assurance that the [`round2::Package`] came from the participant
+/// with that identifier.
+///
+/// It returns the [`KeyPackage`] that has the long-lived key share for the
+/// participant, and the [`PublicKeyPackage`]s that has public information about
+/// all participants; both of which are required to compute FROST signatures.
+pub fn part3<C: Ciphersuite>(
+    round2_secret_package: &round2::SecretPackage<C>,
+    round1_packages: &BTreeMap<Identifier<C>, round1::Package<C>>,
+    round2_packages: &BTreeMap<Identifier<C>, round2::Package<C>>,
+) -> Result<(KeyPackage<C>, PublicKeyPackage<C>), Error<C>> {
+    if round1_packages.len() != (round2_secret_package.max_signers - 1) as usize {
+        return Err(Error::IncorrectNumberOfPackages);
+    }
+    if round1_packages.contains_key(&round2_secret_package.identifier) {
+        return Err(Error::UnknownIdentifier);
+    }
+    if round2_packages.contains_key(&round2_secret_package.identifier) {
+        return Err(Error::UnknownIdentifier);
+    }
+    if round1_packages.len() != round2_packages.len() {
+        return Err(Error::IncorrectNumberOfPackages);
+    }
+    if round1_packages
+        .keys()
+        .any(|id| !round2_packages.contains_key(id))
+    {
+        return Err(Error::IncorrectPackage);
+    }
+
+    let mut signing_share = <<C::Group as Group>::Field>::zero();
+
+    for (sender_identifier, round2_package) in round2_packages {
+        // Round 2, Step 2
+        //
+        // > Each P_i verifies their shares by calculating:
+        // > g^{f_ℓ(i)} ≟ ∏^{t−1}_{k=0} φ^{i^k mod q}_{ℓk}, aborting if the
+        // > check fails.
+        let ell = *sender_identifier;
+        let f_ell_i = round2_package.signing_share;
+
+        let commitment = &round1_packages
+            .get(&ell)
+            .ok_or(Error::PackageNotFound)?
+            .commitment;
+
+        // The verification is exactly the same as the regular SecretShare verification;
+        // however the required components are in different places.
+        // Build a temporary SecretShare so what we can call verify().
+        let secret_share = SecretShare {
+            header: Header::default(),
+            identifier: round2_secret_package.identifier,
+            signing_share: f_ell_i,
+            commitment: commitment.clone(),
+        };
+
+        // Verify the share. We don't need the result.
+        // Identify the culprit if an InvalidSecretShare error is returned.
+        let _ = secret_share.verify().map_err(|e| {
+            if let Error::InvalidSecretShare { .. } = e {
+                Error::InvalidSecretShare {
+                    culprit: Some(*sender_identifier),
+                }
+            } else {
+                e
+            }
+        })?;
+
+        // Round 2, Step 3
+        //
+        // > Each P_i calculates their long-lived private signing share by computing
+        // > s_i = ∑^n_{ℓ=1} f_ℓ(i), stores s_i securely, and deletes each f_ℓ(i).
+        signing_share = signing_share + f_ell_i.to_scalar();
+    }
+
+    signing_share = signing_share + round2_secret_package.secret_share();
+    let signing_share = SigningShare::new(signing_share);
+
+    // Round 2, Step 4
+    //
+    // > Each P_i calculates their public verification share Y_i = g^{s_i}.
+    let verifying_share = signing_share.into();
+
+    let commitments: BTreeMap<_, _> = round1_packages
+        .iter()
+        .map(|(id, package)| (*id, &package.commitment))
+        .chain(iter::once((
+            round2_secret_package.identifier,
+            &round2_secret_package.commitment,
+        )))
+        .collect();
+    let public_key_package = PublicKeyPackage::from_dkg_commitments(&commitments)?;
+
+    let key_package = KeyPackage {
+        header: Header::default(),
+        identifier: round2_secret_package.identifier,
+        signing_share,
+        verifying_share,
+        verifying_key: public_key_package.verifying_key,
+        min_signers: round2_secret_package.min_signers,
+    };
+
+    C::post_dkg(key_package, public_key_package)
+}
+
+
