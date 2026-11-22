@@ -1,7 +1,9 @@
 import json
 import secrets
+import shutil
 import time
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from fintech_agent.adapters.dpapi import DpapiFileSealedStorage
@@ -11,6 +13,7 @@ from fintech_agent.adapters.http_enclave import (
     HttpEndpoint,
     HttpKeyGenerationGateway,
     HttpPolicyGateway,
+    HttpTenantGateway,
     ServedEnclave,
     build_server,
 )
@@ -30,6 +33,20 @@ from fintech_agent.application.enclave_node import (
     EnclaveNode,
 )
 from fintech_agent.application.enclave_service import EnclaveService, ServiceParts
+from fintech_agent.application.enclave_tenancy import (
+    PRIMARY_TENANT,
+    TenancyParts,
+    TenantedEnclave,
+    require_tenant_name,
+)
+from fintech_agent.application.halt_switch import (
+    GuardParts,
+    HaltGuard,
+    HaltOrder,
+    HaltScope,
+    HaltScopes,
+    HaltSwitch,
+)
 from fintech_agent.application.key_generation_ports import KeyGenerationGateway
 from fintech_agent.application.key_share_record import KeyShareRecord
 from fintech_agent.application.policy_authorizer import (
@@ -38,6 +55,9 @@ from fintech_agent.application.policy_authorizer import (
 )
 from fintech_agent.application.ports import (
     EnclaveGateway,
+    EnclaveRefusedError,
+    EnclaveUnavailableError,
+    SealedDataCorruptError,
     SealedDataNotFoundError,
     SealedStorage,
 )
@@ -72,10 +92,24 @@ class AlreadyProvisionedError(Exception):
 
 
 @dataclass(frozen=True)
+class EnclaveSet:
+    root: Path
+    tenant: str = PRIMARY_TENANT
+
+
+@dataclass(frozen=True)
+class TenantSlot:
+    root: Path
+    identifier: int
+    tenant: str = PRIMARY_TENANT
+
+
+@dataclass(frozen=True)
 class ProvisioningLayout:
     root: Path
     threshold: int
     ports: dict[int, int]
+    tenant: str = PRIMARY_TENANT
 
 
 @dataclass(frozen=True)
@@ -88,8 +122,29 @@ def node_storage(root: Path, identifier: int) -> DpapiFileSealedStorage:
     return DpapiFileSealedStorage(root / f"node-{identifier}")
 
 
-def coordinator_storage(root: Path) -> DpapiFileSealedStorage:
-    return DpapiFileSealedStorage(root / COORDINATOR_DIRECTORY)
+def tenant_storage(slot: TenantSlot) -> DpapiFileSealedStorage:
+    return DpapiFileSealedStorage(
+        slot.root / f"node-{slot.identifier}" / require_tenant_name(slot.tenant)
+    )
+
+
+def coordinator_storage(enclaves: EnclaveSet) -> DpapiFileSealedStorage:
+    return DpapiFileSealedStorage(
+        enclaves.root / COORDINATOR_DIRECTORY / require_tenant_name(enclaves.tenant)
+    )
+
+
+class LocalTenantDirectory:
+    def __init__(self, root: Path, identifier: int) -> None:
+        self._root = root
+        self._identifier = identifier
+
+    def token_of(self, tenant: str) -> bytes:
+        slot = TenantSlot(self._root, self._identifier, tenant)
+        try:
+            return tenant_storage(slot).unseal(TOKEN_NAME)
+        except (SealedDataNotFoundError, SealedDataCorruptError, ValueError):
+            return b""
 
 
 def provision_development_enclaves(layout: ProvisioningLayout) -> PublicGroup:
@@ -101,14 +156,14 @@ def provision_development_enclaves(layout: ProvisioningLayout) -> PublicGroup:
         record = KeyShareRecord(
             share.identifier, layout.threshold, share.value, dealt.group_public_key
         )
-        node_storage(layout.root, share.identifier).seal(
+        tenant_storage(TenantSlot(layout.root, share.identifier, layout.tenant)).seal(
             KEY_SHARE_NAME, record.serialize()
         )
     _, verifying_shares = derive_group_info(len(layout.ports), dealt.vss_commitment)
     configuration = GroupConfiguration(
         dealt.group_public_key, layout.threshold, verifying_shares
     )
-    _write_group_file(layout.root, configuration)
+    _write_group_file(EnclaveSet(layout.root, layout.tenant), configuration)
     return PublicGroup(configuration, dict(layout.ports))
 
 
@@ -128,23 +183,99 @@ def provision_ceremony_identities(layout: ProvisioningLayout) -> None:
         storage.seal(ROSTER_NAME, roster)
 
 
-def generate_key_with_enclaves(root: Path) -> PublicGroup:
-    layout = _load_layout(root)
-    token = coordinator_storage(root).unseal(TOKEN_NAME)
+def admit_tenant(enclaves: EnclaveSet) -> None:
+    layout = _load_layout(enclaves.root)
+    tenant = require_tenant_name(enclaves.tenant)
+    if LocalTenantDirectory(enclaves.root, next(iter(layout.ports))).token_of(tenant):
+        raise AlreadyProvisionedError(f"{tenant} is already admitted to this set")
+    token = secrets.token_hex(TOKEN_BYTES).encode()
+    for identifier in layout.ports:
+        tenant_storage(TenantSlot(enclaves.root, identifier, tenant)).seal(
+            TOKEN_NAME, token
+        )
+    coordinator_storage(enclaves).seal(TOKEN_NAME, token)
+
+
+def evict_tenant(enclaves: EnclaveSet) -> None:
+    layout = _load_layout(enclaves.root)
+    tenant = require_tenant_name(enclaves.tenant)
+    for endpoint in endpoints_of(enclaves).values():
+        _ask_to_forget(endpoint)
+    for identifier in layout.ports:
+        shutil.rmtree(enclaves.root / f"node-{identifier}" / tenant, True)
+    shutil.rmtree(enclaves.root / COORDINATOR_DIRECTORY / tenant, True)
+    shutil.rmtree(enclaves.root / tenant, True)
+
+
+def tenant_is_reachable(enclaves: EnclaveSet) -> bool:
+    try:
+        endpoints = endpoints_of(enclaves)
+    except (SealedDataNotFoundError, SealedDataCorruptError):
+        return False
+    first = endpoints[next(iter(sorted(endpoints)))]
+    try:
+        HttpEnclaveGateway(first).attest(enclaves.tenant.encode())
+    except (EnclaveUnavailableError, EnclaveRefusedError):
+        return False
+    return True
+
+
+def halted_nodes(root: Path) -> tuple[int, ...]:
+    return tuple(
+        identifier
+        for identifier in _load_layout(root).ports
+        if _switch_of(TenantSlot(root, identifier)).in_force() is not None
+    )
+
+
+def halt_fleet(root: Path, order: HaltOrder) -> None:
+    ordered = replace(order, scope=HaltScope.FLEET)
+    for identifier in _load_layout(root).ports:
+        _switch_of(TenantSlot(root, identifier)).halt(ordered)
+
+
+def resume_fleet(root: Path, order: HaltOrder) -> None:
+    ordered = replace(order, scope=HaltScope.FLEET)
+    for identifier in _load_layout(root).ports:
+        _switch_of(TenantSlot(root, identifier)).resume(ordered)
+
+
+def halt_agent(enclaves: EnclaveSet, order: HaltOrder) -> None:
+    ordered = replace(order, scope=HaltScope.AGENT)
+    for slot in _slots_of(enclaves):
+        _switch_of(slot).halt(ordered)
+
+
+def resume_agent(enclaves: EnclaveSet, order: HaltOrder) -> None:
+    ordered = replace(order, scope=HaltScope.AGENT)
+    for slot in _slots_of(enclaves):
+        _switch_of(slot).resume(ordered)
+
+
+def endpoints_of(enclaves: EnclaveSet) -> dict[int, HttpEndpoint]:
+    token = _token_of(enclaves)
+    return {
+        identifier: HttpEndpoint(_url_of(port), token, enclaves.tenant)
+        for identifier, port in _load_layout(enclaves.root).ports.items()
+    }
+
+
+def generate_key_with_enclaves(enclaves: EnclaveSet) -> PublicGroup:
+    layout = _load_layout(enclaves.root)
     gateways: dict[int, KeyGenerationGateway] = {
-        identifier: HttpKeyGenerationGateway(HttpEndpoint(_url_of(port), token))
-        for identifier, port in layout.ports.items()
+        identifier: HttpKeyGenerationGateway(endpoint)
+        for identifier, endpoint in endpoints_of(enclaves).items()
     }
     configuration = RunKeyGeneration(
         KeyGenerationSetup(layout.threshold, gateways)
     ).execute()
-    _write_group_file(root, configuration)
+    _write_group_file(enclaves, configuration)
     return PublicGroup(configuration, layout.ports)
 
 
-def load_public_group(root: Path) -> PublicGroup:
-    layout = _load_layout(root)
-    document = json.loads((root / GROUP_FILE_NAME).read_text())
+def load_public_group(enclaves: EnclaveSet) -> PublicGroup:
+    layout = _load_layout(enclaves.root)
+    document = json.loads(_group_path(enclaves).read_text())
     configuration = GroupConfiguration(
         Point.deserialize(bytes.fromhex(document["group_public_key"])),
         layout.threshold,
@@ -160,27 +291,18 @@ def wall_clock_seconds() -> int:
     return int(time.time())
 
 
-def issue_session_policy(root: Path, policy: SessionPolicy) -> None:
-    layout = _load_layout(root)
-    token = coordinator_storage(root).unseal(TOKEN_NAME)
-    for port in layout.ports.values():
-        HttpPolicyGateway(HttpEndpoint(_url_of(port), token)).issue_policy(policy)
+def issue_session_policy(enclaves: EnclaveSet, policy: SessionPolicy) -> None:
+    for endpoint in endpoints_of(enclaves).values():
+        HttpPolicyGateway(endpoint).issue_policy(policy)
 
 
 def build_served_enclave(root: Path, identifier: int) -> ServedEnclave:
-    storage = node_storage(root, identifier)
-    authorizer = PolicyAuthorizer(AuthorizerParts(storage, wall_clock_seconds))
-    dependencies = EnclaveDependencies(SimulatedAttestationProvider(), authorizer)
-    service = EnclaveService(
-        ServiceParts(
-            identifier,
-            dependencies,
-            _load_signer(storage, dependencies),
-            _load_ceremony(storage, identifier),
-            authorizer,
-        )
+    def build(tenant: str) -> EnclaveService:
+        return _tenant_service(TenantSlot(root, identifier, tenant))
+
+    return ServedEnclave(
+        TenantedEnclave(TenancyParts(LocalTenantDirectory(root, identifier), build))
     )
-    return ServedEnclave(service, storage.unseal(TOKEN_NAME))
 
 
 def serve_enclave_forever(root: Path, identifier: int) -> None:
@@ -193,12 +315,12 @@ def serve_enclave_forever(root: Path, identifier: int) -> None:
         server.server_close()
 
 
-def build_signing_setup(root: Path) -> SigningSetup:
-    group = load_public_group(root)
-    token = coordinator_storage(root).unseal(TOKEN_NAME)
+def build_signing_setup(enclaves: EnclaveSet) -> SigningSetup:
+    group = load_public_group(enclaves)
+    endpoints = endpoints_of(enclaves)
     gateways: dict[int, EnclaveGateway] = {
-        identifier: HttpEnclaveGateway(HttpEndpoint(_url_of(port), token))
-        for identifier, port in group.ports.items()
+        identifier: HttpEnclaveGateway(endpoints[identifier])
+        for identifier in group.ports
     }
     return SigningSetup(
         group=group.configuration,
@@ -206,6 +328,44 @@ def build_signing_setup(root: Path) -> SigningSetup:
         verifier=SimulatedAttestationVerifier(),
         allow_simulated_attestation=True,
     )
+
+
+def _tenant_service(slot: TenantSlot) -> EnclaveService:
+    storage = tenant_storage(slot)
+    authorizer = PolicyAuthorizer(AuthorizerParts(storage, wall_clock_seconds))
+    guard = HaltGuard(GuardParts(_switch_of(slot), authorizer))
+    dependencies = EnclaveDependencies(SimulatedAttestationProvider(), guard)
+    return EnclaveService(
+        ServiceParts(
+            slot.identifier,
+            dependencies,
+            _load_signer(storage, dependencies),
+            _load_ceremony(slot),
+            authorizer,
+        )
+    )
+
+
+def _switch_of(slot: TenantSlot) -> HaltSwitch:
+    return HaltSwitch(
+        HaltScopes(node_storage(slot.root, slot.identifier), tenant_storage(slot))
+    )
+
+
+def _slots_of(enclaves: EnclaveSet) -> tuple[TenantSlot, ...]:
+    return tuple(
+        TenantSlot(enclaves.root, identifier, enclaves.tenant)
+        for identifier in _load_layout(enclaves.root).ports
+    )
+
+
+def _token_of(enclaves: EnclaveSet) -> bytes:
+    return coordinator_storage(enclaves).unseal(TOKEN_NAME)
+
+
+def _ask_to_forget(endpoint: HttpEndpoint) -> None:
+    with suppress(EnclaveUnavailableError):
+        HttpTenantGateway(endpoint).forget()
 
 
 def _url_of(port: int) -> str:
@@ -221,9 +381,12 @@ def _require_empty(root: Path) -> None:
 
 def _provision_tokens(layout: ProvisioningLayout) -> None:
     token = secrets.token_hex(TOKEN_BYTES).encode()
+    tenant = require_tenant_name(layout.tenant)
     for identifier in layout.ports:
-        node_storage(layout.root, identifier).seal(TOKEN_NAME, token)
-    coordinator_storage(layout.root).seal(TOKEN_NAME, token)
+        tenant_storage(TenantSlot(layout.root, identifier, tenant)).seal(
+            TOKEN_NAME, token
+        )
+    coordinator_storage(EnclaveSet(layout.root, tenant)).seal(TOKEN_NAME, token)
     layout.root.mkdir(parents=True, exist_ok=True)
     (layout.root / LAYOUT_FILE_NAME).write_text(
         json.dumps(
@@ -255,10 +418,11 @@ def _load_signer(
         return None
 
 
-def _load_ceremony(storage: SealedStorage, identifier: int) -> DkgEnclave | None:
+def _load_ceremony(slot: TenantSlot) -> DkgEnclave | None:
+    process = node_storage(slot.root, slot.identifier)
     try:
-        identity = storage.unseal(IDENTITY_NAME)
-        roster_document = json.loads(storage.unseal(ROSTER_NAME))
+        identity = process.unseal(IDENTITY_NAME)
+        roster_document = json.loads(process.unseal(ROSTER_NAME))
     except SealedDataNotFoundError:
         return None
     roster = {
@@ -266,12 +430,19 @@ def _load_ceremony(storage: SealedStorage, identifier: int) -> DkgEnclave | None
         for member, encoded in roster_document.items()
     }
     channel = X25519ChaChaChannel(KeyPair(identity[:32], identity[32:]), roster)
-    return DkgEnclave(DkgEnclaveSetup(identifier, len(roster), channel, storage))
+    return DkgEnclave(
+        DkgEnclaveSetup(slot.identifier, len(roster), channel, tenant_storage(slot))
+    )
 
 
-def _write_group_file(root: Path, configuration: GroupConfiguration) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    (root / GROUP_FILE_NAME).write_text(
+def _group_path(enclaves: EnclaveSet) -> Path:
+    return enclaves.root / require_tenant_name(enclaves.tenant) / GROUP_FILE_NAME
+
+
+def _write_group_file(enclaves: EnclaveSet, configuration: GroupConfiguration) -> None:
+    path = _group_path(enclaves)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(
             {
                 "group_public_key": configuration.group_public_key.serialize().hex(),

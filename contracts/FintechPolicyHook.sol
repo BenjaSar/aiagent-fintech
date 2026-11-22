@@ -57,15 +57,21 @@ contract FintechPolicyHook is IERC7579Hook {
     mapping(address account => uint256 epoch) private epochs;
     mapping(bytes32 scope => bool configured) private configuredScopes;
     mapping(bytes32 scope => mapping(address target => bool allowed)) private allowedTargets;
+    mapping(bytes32 scope => mapping(address payee => bool allowed)) private allowedPayees;
+    mapping(bytes32 scope => bool paymentsOnly) private paymentScopes;
     mapping(bytes32 scope => mapping(address asset => uint256 cap)) private caps;
     mapping(bytes32 scope => address[] assets) private assetLists;
     mapping(bytes32 scope => mapping(address asset => Window window)) private windows;
     mapping(bytes32 scope => mapping(address asset => mapping(uint256 position => uint256 packed))) private events;
 
-    event PolicyConfigured(address indexed account, address[] targets, AssetRule[] rules);
+    event PolicyConfigured(
+        address indexed account, address[] targets, AssetRule[] rules, address[] payees, bool paymentsOnly
+    );
     event PolicyCleared(address indexed account);
     event TargetAllowed(address indexed account, address indexed target);
     event TargetRevoked(address indexed account, address indexed target);
+    event PayeeAllowed(address indexed account, address indexed payee);
+    event PayeeRevoked(address indexed account, address indexed payee);
     event CapSet(address indexed account, address indexed asset, uint256 cap);
 
     error AlreadyConfigured();
@@ -76,6 +82,9 @@ contract FintechPolicyHook is IERC7579Hook {
     error TooManyExecutions(uint256 count);
     error ForbiddenTarget(address target);
     error TargetNotAllowed(address target);
+    error PayeeNotAllowed(address payee);
+    error ApprovalNotAllowed(address token);
+    error CallDataNotAllowed(address target);
     error AssetNotAllowed(address asset);
     error UnsupportedTokenCall(address token, bytes4 selector);
     error CapExceeded(address asset, uint256 requested, uint256 remaining);
@@ -95,15 +104,20 @@ contract FintechPolicyHook is IERC7579Hook {
     function onInstall(bytes calldata data) external {
         bytes32 scope = scopeOf(msg.sender);
         if (configuredScopes[scope]) revert AlreadyConfigured();
-        (address[] memory targets, AssetRule[] memory rules) = abi.decode(data, (address[], AssetRule[]));
+        (address[] memory targets, AssetRule[] memory rules, address[] memory payees, bool paymentsOnly) =
+            abi.decode(data, (address[], AssetRule[], address[], bool));
         configuredScopes[scope] = true;
+        paymentScopes[scope] = paymentsOnly;
         for (uint256 index = 0; index < targets.length; index++) {
             addTarget(scope, targets[index]);
         }
         for (uint256 index = 0; index < rules.length; index++) {
             addRule(scope, rules[index]);
         }
-        emit PolicyConfigured(msg.sender, targets, rules);
+        for (uint256 index = 0; index < payees.length; index++) {
+            addPayee(scope, payees[index]);
+        }
+        emit PolicyConfigured(msg.sender, targets, rules, payees, paymentsOnly);
     }
 
     function onUninstall(bytes calldata) external {
@@ -131,6 +145,18 @@ contract FintechPolicyHook is IERC7579Hook {
         emit TargetRevoked(msg.sender, target);
     }
 
+    function allowPayee(address payee) external {
+        bytes32 scope = requireConfigured(msg.sender);
+        addPayee(scope, payee);
+        emit PayeeAllowed(msg.sender, payee);
+    }
+
+    function revokePayee(address payee) external {
+        bytes32 scope = requireConfigured(msg.sender);
+        delete allowedPayees[scope][payee];
+        emit PayeeRevoked(msg.sender, payee);
+    }
+
     function setCap(address asset, uint256 cap) external {
         bytes32 scope = requireConfigured(msg.sender);
         if (cap == 0) {
@@ -143,6 +169,14 @@ contract FintechPolicyHook is IERC7579Hook {
 
     function isTargetAllowed(address account, address target) external view returns (bool) {
         return allowedTargets[scopeOf(account)][target];
+    }
+
+    function isPayeeAllowed(address account, address payee) external view returns (bool) {
+        return allowedPayees[scopeOf(account)][payee];
+    }
+
+    function isPaymentScope(address account) external view returns (bool) {
+        return paymentScopes[scopeOf(account)];
     }
 
     function capOf(address account, address asset) external view returns (uint256) {
@@ -237,24 +271,44 @@ contract FintechPolicyHook is IERC7579Hook {
         requireNotInfrastructure(execution.target);
         requireNotSanctioned(execution.target);
         if (caps[scope][execution.target] != 0) {
-            accountForToken(spending, execution);
+            accountForToken(scope, spending, execution);
             return;
         }
         if (!allowedTargets[scope][execution.target]) revert TargetNotAllowed(execution.target);
+        requirePaymentShape(scope, execution);
         if (execution.value != 0) addMovement(spending, Movement(NATIVE_ASSET, execution.value, true));
     }
 
-    function accountForToken(Spending memory spending, Execution memory execution) private view {
+    function requirePaymentShape(bytes32 scope, Execution memory execution) private view {
+        if (!paymentScopes[scope]) return;
+        if (execution.callData.length != 0) revert CallDataNotAllowed(execution.target);
+        if (!allowedPayees[scope][execution.target]) revert PayeeNotAllowed(execution.target);
+    }
+
+    function accountForToken(bytes32 scope, Spending memory spending, Execution memory execution) private view {
         if (execution.value != 0) revert AssetNotAllowed(execution.target);
         bytes memory callData = execution.callData;
         bytes4 selector = callData.length >= 4 ? bytes4(callData) : bytes4(0);
         if (callData.length != TOKEN_CALL_LENGTH || !isTransferOrApproval(selector)) {
             revert UnsupportedTokenCall(execution.target, selector);
         }
-        requireNotSanctioned(tokenCounterparty(execution.target, callData));
+        address counterparty = tokenCounterparty(execution.target, callData);
+        requireNotSanctioned(counterparty);
+        requirePaymentSelector(scope, execution.target, selector);
+        requirePaymentCounterparty(scope, counterparty);
         uint256 amount = tokenAmount(callData);
         bool leavesAccount = selector == IERC20.transfer.selector;
         addMovement(spending, Movement(execution.target, amount, leavesAccount));
+    }
+
+    function requirePaymentSelector(bytes32 scope, address token, bytes4 selector) private view {
+        if (!paymentScopes[scope]) return;
+        if (selector != IERC20.transfer.selector) revert ApprovalNotAllowed(token);
+    }
+
+    function requirePaymentCounterparty(bytes32 scope, address counterparty) private view {
+        if (!paymentScopes[scope]) return;
+        if (!allowedPayees[scope][counterparty]) revert PayeeNotAllowed(counterparty);
     }
 
     function isTransferOrApproval(bytes4 selector) private pure returns (bool) {
@@ -387,6 +441,12 @@ contract FintechPolicyHook is IERC7579Hook {
         if (target == address(0) || target == msg.sender || target == address(this)) revert InvalidConfiguration();
         if (caps[scope][target] != 0 || target == address(ERC4337Utils.ENTRYPOINT_V08)) revert InvalidConfiguration();
         allowedTargets[scope][target] = true;
+    }
+
+    function addPayee(bytes32 scope, address payee) private {
+        if (payee == address(0) || payee == msg.sender || payee == address(this)) revert InvalidConfiguration();
+        if (payee == address(ERC4337Utils.ENTRYPOINT_V08)) revert InvalidConfiguration();
+        allowedPayees[scope][payee] = true;
     }
 
     function addRule(bytes32 scope, AssetRule memory rule) private {

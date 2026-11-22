@@ -9,9 +9,12 @@ from pathlib import Path
 
 import pytest
 
+from fintech_agent.adapters.http_enclave import HttpEnclaveGateway
 from fintech_agent.application.enclave_node import KEY_SHARE_NAME
+from fintech_agent.application.halt_switch import HaltOrder, HaltScope
 from fintech_agent.application.key_share_record import KeyShareRecord
 from fintech_agent.application.ports import (
+    CommitmentRequest,
     EnclaveRefusedError,
     EnclaveUnavailableError,
 )
@@ -24,13 +27,24 @@ from fintech_agent.application.sign_user_operation import (
 )
 from fintech_agent.composition.local_enclaves import (
     AlreadyProvisionedError,
+    EnclaveSet,
     ProvisioningLayout,
+    TenantSlot,
+    admit_tenant,
     build_signing_setup,
+    endpoints_of,
+    evict_tenant,
     generate_key_with_enclaves,
+    halt_agent,
+    halt_fleet,
+    halted_nodes,
     issue_session_policy,
-    node_storage,
     provision_ceremony_identities,
     provision_development_enclaves,
+    resume_agent,
+    resume_fleet,
+    tenant_is_reachable,
+    tenant_storage,
 )
 from fintech_agent.domain.session_policy import SessionPolicy
 from fintech_agent.domain.user_operation import UserOperation
@@ -90,7 +104,7 @@ def start_process(root: Path, identifier: int) -> subprocess.Popen[bytes]:
 
 
 def wait_until_listening(root: Path, identifier: int) -> None:
-    gateway = build_signing_setup(root).gateways[identifier]
+    gateway = build_signing_setup(EnclaveSet(root)).gateways[identifier]
     deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         try:
@@ -111,7 +125,7 @@ def running_enclaves(tmp_path: Path) -> Iterator[RunningEnclaves]:
     try:
         for identifier in IDENTIFIERS:
             wait_until_listening(tmp_path, identifier)
-        issue_session_policy(tmp_path, wall_clock_policy())
+        issue_session_policy(EnclaveSet(tmp_path), wall_clock_policy())
         yield running
     finally:
         for identifier in IDENTIFIERS:
@@ -124,7 +138,7 @@ def wall_clock_policy() -> SessionPolicy:
 
 def sign_operation(root: Path, operation: UserOperation) -> bool:
     message = user_operation_hash(operation, wall_clock_policy().domain)
-    setup = build_signing_setup(root)
+    setup = build_signing_setup(EnclaveSet(root))
     signature = SignUserOperation(setup).execute(SigningRequest(message, operation))
     return signature_verifies(signature, message, setup.group.group_public_key)
 
@@ -159,7 +173,7 @@ def test_the_system_halts_with_fewer_than_the_threshold_running(
 
 def test_a_share_never_appears_in_plaintext_on_disk(tmp_path: Path) -> None:
     provision(tmp_path)
-    plaintext = node_storage(tmp_path, 1).unseal(KEY_SHARE_NAME)
+    plaintext = tenant_storage(TenantSlot(tmp_path, 1)).unseal(KEY_SHARE_NAME)
     secret_share = KeyShareRecord.deserialize(plaintext).secret_share
 
     for path in tmp_path.rglob("*"):
@@ -208,20 +222,20 @@ def wait_until_listening_for_ceremony(root: Path, identifier: int) -> None:
 def test_processes_generate_a_key_together_and_then_sign_with_it(
     ceremony_enclaves: RunningEnclaves,
 ) -> None:
-    group = generate_key_with_enclaves(ceremony_enclaves.root)
-    issue_session_policy(ceremony_enclaves.root, wall_clock_policy())
+    group = generate_key_with_enclaves(EnclaveSet(ceremony_enclaves.root))
+    issue_session_policy(EnclaveSet(ceremony_enclaves.root), wall_clock_policy())
 
     assert sign_and_verify(ceremony_enclaves.root)
     assert group.configuration.group_public_key == (
-        build_signing_setup(ceremony_enclaves.root).group.group_public_key
+        build_signing_setup(EnclaveSet(ceremony_enclaves.root)).group.group_public_key
     )
 
 
 def test_a_restarted_process_reloads_its_generated_share_from_sealed_storage(
     ceremony_enclaves: RunningEnclaves,
 ) -> None:
-    generate_key_with_enclaves(ceremony_enclaves.root)
-    issue_session_policy(ceremony_enclaves.root, wall_clock_policy())
+    generate_key_with_enclaves(EnclaveSet(ceremony_enclaves.root))
+    issue_session_policy(EnclaveSet(ceremony_enclaves.root), wall_clock_policy())
     for identifier in (1, 2):
         ceremony_enclaves.stop(identifier)
         ceremony_enclaves.processes[identifier] = start_process(
@@ -236,16 +250,16 @@ def test_a_restarted_process_reloads_its_generated_share_from_sealed_storage(
 def test_a_second_ceremony_is_refused_once_shares_exist(
     ceremony_enclaves: RunningEnclaves,
 ) -> None:
-    generate_key_with_enclaves(ceremony_enclaves.root)
+    generate_key_with_enclaves(EnclaveSet(ceremony_enclaves.root))
 
     with pytest.raises(KeyGenerationFailedError):
-        generate_key_with_enclaves(ceremony_enclaves.root)
+        generate_key_with_enclaves(EnclaveSet(ceremony_enclaves.root))
 
 
 def test_processes_refuse_a_bare_hash_even_with_a_policy_installed(
     running_enclaves: RunningEnclaves,
 ) -> None:
-    setup = build_signing_setup(running_enclaves.root)
+    setup = build_signing_setup(EnclaveSet(running_enclaves.root))
 
     with pytest.raises(SigningFailedError):
         SignUserOperation(setup).execute(SigningRequest(USER_OPERATION_HASH))
@@ -255,7 +269,7 @@ def test_processes_accept_a_policy_once_only(
     running_enclaves: RunningEnclaves,
 ) -> None:
     with pytest.raises(EnclaveRefusedError):
-        issue_session_policy(running_enclaves.root, wall_clock_policy())
+        issue_session_policy(EnclaveSet(running_enclaves.root), wall_clock_policy())
 
 
 def test_the_spend_ledger_survives_a_process_restart(
@@ -279,3 +293,250 @@ def test_the_spend_ledger_survives_a_process_restart(
     assert sign_operation(
         running_enclaves.root, build_operation(single(TARGET, ETHER * 4 // 10))
     )
+
+
+FIRST_TENANT = "agent-one"
+SECOND_TENANT = "agent-two"
+HALT_REASON = "an incident is open"
+
+
+def first_set(root: Path) -> EnclaveSet:
+    return EnclaveSet(root, FIRST_TENANT)
+
+
+def second_set(root: Path) -> EnclaveSet:
+    return EnclaveSet(root, SECOND_TENANT)
+
+
+def sign_as(enclaves: EnclaveSet, operation: UserOperation) -> bool:
+    message = user_operation_hash(operation, wall_clock_policy().domain)
+    setup = build_signing_setup(enclaves)
+    signature = SignUserOperation(setup).execute(SigningRequest(message, operation))
+    return signature_verifies(signature, message, setup.group.group_public_key)
+
+
+def signs(enclaves: EnclaveSet) -> bool:
+    return sign_as(enclaves, build_operation(single(TARGET)))
+
+
+def refusal_of(enclaves: EnclaveSet) -> str:
+    try:
+        signs(enclaves)
+    except SigningFailedError as failure:
+        return str(failure.__cause__)
+    return ""
+
+
+def order() -> HaltOrder:
+    return HaltOrder(HaltScope.FLEET, HALT_REASON, 1)
+
+
+@pytest.fixture
+def tenanted_enclaves(tmp_path: Path) -> Iterator[RunningEnclaves]:
+    ports = dict(enumerate(free_ports(len(IDENTIFIERS)), start=1))
+    provision_ceremony_identities(ProvisioningLayout(tmp_path, 2, ports, FIRST_TENANT))
+    running = RunningEnclaves(
+        tmp_path,
+        {identifier: start_process(tmp_path, identifier) for identifier in IDENTIFIERS},
+    )
+    try:
+        for identifier in IDENTIFIERS:
+            wait_until_listening_for_ceremony(tmp_path, identifier)
+        yield running
+    finally:
+        for identifier in IDENTIFIERS:
+            running.stop(identifier)
+
+
+def admit_and_generate(enclaves: EnclaveSet) -> bytes:
+    admit_tenant(enclaves)
+    return generated_key(enclaves)
+
+
+def generated_key(enclaves: EnclaveSet) -> bytes:
+    group = generate_key_with_enclaves(enclaves)
+    return group.configuration.group_public_key.serialize()
+
+
+def test_two_tenants_share_one_process_set_with_keys_of_their_own(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    first_key = generated_key(first_set(root))
+    second_key = admit_and_generate(second_set(root))
+    for enclaves in (first_set(root), second_set(root)):
+        issue_session_policy(enclaves, wall_clock_policy())
+
+    assert first_key != second_key
+    assert signs(first_set(root))
+    assert signs(second_set(root))
+
+
+def test_the_first_tenant_is_admitted_by_its_provisioning(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generate_key_with_enclaves(first_set(root))
+    issue_session_policy(first_set(root), wall_clock_policy())
+
+    assert signs(first_set(root))
+
+
+def test_a_tenant_admitted_twice_is_refused(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    admit_tenant(second_set(tenanted_enclaves.root))
+
+    with pytest.raises(AlreadyProvisionedError):
+        admit_tenant(second_set(tenanted_enclaves.root))
+
+
+def test_one_tenants_token_cannot_reach_another_tenant(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    admit_tenant(second_set(root))
+    borrowed = replace(endpoints_of(first_set(root))[1], tenant=SECOND_TENANT)
+
+    with pytest.raises(EnclaveRefusedError, match="unauthorized"):
+        HttpEnclaveGateway(borrowed).attest(b"liveness")
+
+
+def test_a_policy_issued_to_one_tenant_does_not_reach_another(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    admit_and_generate(second_set(root))
+    issue_session_policy(first_set(root), wall_clock_policy())
+
+    assert signs(first_set(root))
+    assert "no session policy" in refusal_of(second_set(root))
+
+
+def test_each_tenant_accepts_its_own_policy_once(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    admit_and_generate(second_set(root))
+    issue_session_policy(first_set(root), wall_clock_policy())
+
+    with pytest.raises(EnclaveRefusedError, match="already installed"):
+        issue_session_policy(first_set(root), wall_clock_policy())
+    issue_session_policy(second_set(root), wall_clock_policy())
+
+
+def test_an_evicted_tenant_is_unreachable_and_the_other_keeps_signing(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    admit_and_generate(second_set(root))
+    for enclaves in (first_set(root), second_set(root)):
+        issue_session_policy(enclaves, wall_clock_policy())
+
+    evict_tenant(second_set(root))
+
+    assert not tenant_is_reachable(second_set(root))
+    assert tenant_is_reachable(first_set(root))
+    assert signs(first_set(root))
+
+
+def test_a_fleet_halt_stops_every_tenant_until_it_is_lifted(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    admit_and_generate(second_set(root))
+    for enclaves in (first_set(root), second_set(root)):
+        issue_session_policy(enclaves, wall_clock_policy())
+
+    halt_fleet(root, order())
+
+    for enclaves in (first_set(root), second_set(root)):
+        assert HALT_REASON in refusal_of(enclaves)
+    resume_fleet(root, order())
+    assert signs(first_set(root))
+    assert signs(second_set(root))
+
+
+def test_an_agent_halt_stops_that_agent_alone(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    admit_and_generate(second_set(root))
+    for enclaves in (first_set(root), second_set(root)):
+        issue_session_policy(enclaves, wall_clock_policy())
+
+    halt_agent(second_set(root), order())
+
+    assert HALT_REASON in refusal_of(second_set(root))
+    assert signs(first_set(root))
+    resume_agent(second_set(root), order())
+    assert signs(second_set(root))
+
+
+def test_an_evicted_tenants_key_share_is_forgotten_by_the_process(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    issue_session_policy(first_set(root), wall_clock_policy())
+
+    evict_tenant(first_set(root))
+    admit_tenant(first_set(root))
+
+    gateway = HttpEnclaveGateway(endpoints_of(first_set(root))[1])
+    with pytest.raises(EnclaveRefusedError, match="no key share"):
+        gateway.request_commitments(CommitmentRequest(b"session"))
+
+
+def test_a_fleet_halt_reaches_every_node_and_a_resume_clears_them(
+    tmp_path: Path,
+) -> None:
+    ports = dict(enumerate(free_ports(len(IDENTIFIERS)), start=1))
+    provision_ceremony_identities(ProvisioningLayout(tmp_path, 2, ports, FIRST_TENANT))
+    assert halted_nodes(tmp_path) == ()
+
+    halt_fleet(tmp_path, order())
+
+    assert halted_nodes(tmp_path) == IDENTIFIERS
+    resume_fleet(tmp_path, order())
+    assert halted_nodes(tmp_path) == ()
+
+
+def test_an_agent_halt_reaches_no_node(tmp_path: Path) -> None:
+    ports = dict(enumerate(free_ports(len(IDENTIFIERS)), start=1))
+    provision_ceremony_identities(ProvisioningLayout(tmp_path, 2, ports, FIRST_TENANT))
+
+    halt_agent(first_set(tmp_path), order())
+
+    assert halted_nodes(tmp_path) == ()
+
+
+def test_a_tenant_on_a_stopped_process_set_is_unreachable(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+    issue_session_policy(first_set(root), wall_clock_policy())
+    assert tenant_is_reachable(first_set(root))
+
+    for identifier in IDENTIFIERS:
+        tenanted_enclaves.stop(identifier)
+
+    assert not tenant_is_reachable(first_set(root))
+
+
+def test_a_halted_tenant_still_answers_an_attestation(
+    tenanted_enclaves: RunningEnclaves,
+) -> None:
+    root = tenanted_enclaves.root
+    generated_key(first_set(root))
+
+    halt_agent(first_set(root), order())
+
+    assert tenant_is_reachable(first_set(root))

@@ -45,7 +45,7 @@ def main() -> int:
         enclave_root=ENCLAVE_ROOT,
         halt_enclave=halt_enclave,
         halt_bundler=halt_bundler,
-        rotation_directory=REPOSITORY_ROOT / ".local" / "rotations",
+        enclave_sets_directory=REPOSITORY_ROOT / ".local" / "enclave-sets",
         enclave_script=REPOSITORY_ROOT / "scripts" / "run_enclave_node.py",
     )
     results = LocalDrill(environment).run()

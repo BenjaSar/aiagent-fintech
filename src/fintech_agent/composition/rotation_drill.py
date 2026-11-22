@@ -29,7 +29,7 @@ from fintech_agent.composition.drill_toolbox import (
     DrillToolbox,
     is_rejection,
 )
-from fintech_agent.composition.local_enclaves import build_signing_setup
+from fintech_agent.composition.local_enclaves import EnclaveSet, build_signing_setup
 from fintech_agent.composition.policy_drill import NATIVE_CAP
 from fintech_agent.composition.rotation_local import (
     FleetConfiguration,
@@ -181,7 +181,7 @@ class RotationChecks:
         ceremony = LocalKeyCeremony(self._fleet)
         request = self._request()
         outcome = self._rotation(ceremony, DrillUser(declines=False)).execute(request)
-        toolbox.enclave_root = ceremony.require_root()
+        toolbox.enclave_root = ceremony.require_enclaves().root
         toolbox.active_policy = request.following
         self._outcome = outcome
         self._require_rotated(request, outcome)
@@ -236,7 +236,7 @@ class RotationChecks:
         toolbox = self._toolbox
         if OnChainGrantor(toolbox).installed() != before:
             raise DrillFailureError("a declined rotation changed the validator")
-        self._require_stopped(ceremony.require_root())
+        self._require_stopped(ceremony.require_enclaves().root)
         if toolbox.pings() != pings:
             raise DrillFailureError("an unexpected call executed")
         return (
@@ -303,7 +303,7 @@ class RotationChecks:
         )
 
     def _require_stopped(self, root: Path) -> None:
-        gateway = build_signing_setup(root).gateways[1]
+        gateway = build_signing_setup(EnclaveSet(root)).gateways[1]
         try:
             gateway.attest(b"liveness")
         except EnclaveUnavailableError:

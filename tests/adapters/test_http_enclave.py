@@ -45,6 +45,7 @@ from tests.application.fixtures import (
     build_setup,
     record_of,
     service_for,
+    tenanted,
 )
 from tests.application.test_sign_user_operation import verifies
 from tests.policy_fixtures import (
@@ -63,7 +64,7 @@ CONNECTION_DROPPED = -1
 
 @contextmanager
 def serving(node: EnclaveNode, token: bytes = TOKEN) -> Iterator[str]:
-    server = build_server(ServedEnclave(service_for(node), token), 0)
+    server = build_server(ServedEnclave(tenanted(service_for(node), token)), 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -162,7 +163,8 @@ def test_a_second_commitment_for_a_session_is_refused_over_http() -> None:
 
 
 def test_the_server_binds_to_the_loopback_interface_only() -> None:
-    server = build_server(ServedEnclave(service_for(build_node(1)), TOKEN), 0)
+    served = ServedEnclave(tenanted(service_for(build_node(1)), TOKEN))
+    server = build_server(served, 0)
     try:
         assert server.server_address[0] == LOOPBACK_ADDRESS
     finally:
@@ -193,7 +195,7 @@ def enforcing_node(identifier: int) -> EnclaveService:
 
 @contextmanager
 def serving_service(service: EnclaveService) -> Iterator[str]:
-    server = build_server(ServedEnclave(service, TOKEN), 0)
+    server = build_server(ServedEnclave(tenanted(service, TOKEN)), 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

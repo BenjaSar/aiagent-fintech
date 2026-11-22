@@ -14,6 +14,8 @@ class HookChangeKind(Enum):
     ALLOW_TARGET = "allowTarget(address)"
     REVOKE_TARGET = "revokeTarget(address)"
     SET_CAP = "setCap(address,uint256)"
+    ALLOW_PAYEE = "allowPayee(address)"
+    REVOKE_PAYEE = "revokePayee(address)"
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ def hook_changes(transition: PolicyTransition) -> tuple[HookChange, ...]:
         *(change for change in caps if change.cap == NO_CAP),
         *(change for change in caps if change.cap != NO_CAP),
         *(HookChange(HookChangeKind.ALLOW_TARGET, target) for target in added),
+        *_payee_changes(transition),
     )
 
 
@@ -56,6 +59,20 @@ def _require_same_anchor(transition: PolicyTransition) -> None:
         )
     if previous.window_seconds != following.window_seconds:
         raise TransitionError("the rolling window is fixed by the hook")
+    if previous.payments_only != following.payments_only:
+        raise TransitionError(
+            "a rotation cannot turn a payments-only policy into another kind"
+        )
+
+
+def _payee_changes(transition: PolicyTransition) -> tuple[HookChange, ...]:
+    previous, following = transition.previous, transition.following
+    removed = sorted(previous.allowed_payees - following.allowed_payees)
+    added = sorted(following.allowed_payees - previous.allowed_payees)
+    return (
+        *(HookChange(HookChangeKind.REVOKE_PAYEE, payee) for payee in removed),
+        *(HookChange(HookChangeKind.ALLOW_PAYEE, payee) for payee in added),
+    )
 
 
 def _cap_changes(

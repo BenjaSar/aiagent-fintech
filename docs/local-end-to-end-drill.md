@@ -41,6 +41,46 @@ The session signature is the 65-byte `R ‖ z` that the Python aggregation produ
 - **The halt check kills processes**; it shows that the coordinator refuses, not that an agent process reacts. The agent loop itself does not exist yet.
 - **The 1-of-3 case** is a forged signature from a stolen share. The case where only one enclave is reachable is the halt check.
 
+## Update (T-5.10)
+
+The drill now has 46 checks and the factory authors two kinds of agent. The new check authors an **analysis** agent: a generator that proposes a paying tool for it is refused, the approved reader holds no account, no session key, no payee, no asset and no budget, showing it with a session key is refused, its fingerprint binds its definition alone, deriving a policy for it is refused, and its approval screen says in words that it holds nothing. It then reads the fleet's payees and one payment and reports, and the same definition driven by the payment decider is refused at the tool boundary with its account never touched. See `docs/T-5.10-analysis-agents.md`.
+
+## Update (T-5.9)
+
+The drill now has 45 checks and the fleet is operable. Three agents run on **one** set of three enclave processes as separate tenancies, each with its own key share, policy and spend ledger, and a tenant that presents its own token for another tenancy is refused. A fleet halt, written straight into the enclaves' own storage with no service in the path, refuses every agent and moves nothing; an agent halt stops one agent alone; and with the whole fleet halted the owner still revokes an agent through a self-submitted `handleOps`, with no bundler and no enclave involved. A renewal now happens through the scheduler, which renews every session due within the lead. An interaction trace of three runs by two agents is reconstructed as one causal chain that crosses between them twice, which neither agent's own record shows. See `docs/T-5.9-fleet-operations.md`.
+
+## Update (T-5.8)
+
+The drill now has 41 checks and every agent has a lifecycle. Provisioning runs through the development loop, so a candidate that fails evaluation is iterated inside a bounded attempt and cost budget; an iteration that would widen caps, payees or the window is escalated instead of installed; a session due for renewal is rotated unattended through the T-2.7 ceremony when the authority is unchanged, and refused when it is not; and a retired agent ends with no session key, no allowance (swept back to the treasury) and no reachable enclave tenancy. See `docs/T-5.8-closed-loop-and-lifecycle.md`.
+
+## Update (T-5.7)
+
+The drill now has 37 checks, and every agent is evaluated before it is approved: seven checks on the candidate and seven scenarios that drive its runtime against the real enclave-side authorizer, written to the provenance chain as an EVALUATED entry before the owner sees a screen. The new check strips the status tool from a freshly generated candidate and shows promotion refused, with nothing recorded and the agent's cap and payee on chain unchanged. See `docs/T-5.7-evaluation-harness.md`.
+
+## Update (T-5.6)
+
+The drill now has 36 checks, and the two fleet agents are no longer hand-written: each one is generated from a task specification that bounds its tools, payees, caps, window and risk tier, and the generation is written to the provenance chain before the policy is derived. The new check runs a proposer that doubles its own cap and shows it refused, with nothing recorded and the agent's cap and payee on chain unchanged. No model is involved: the proposer is a deterministic stand-in behind a port. See `docs/T-5.6-generator-and-synthesis-gate.md`.
+
+## Update (T-5.5)
+
+The drill now has 35 checks. The second fleet agent is driven by its own runtime: it lists its payees, reads its balance and pays the approved payee, and the drill confirms the balance and the rolling window moved by exactly that amount. Running the same task again pays nothing more, and a task naming a stranger is refused with the agent's session nonce unchanged, so nothing was built, signed or submitted. See `docs/T-5.5-payment-agent-runtime.md`.
+
+## Update (T-5.4)
+
+The drill now has 34 checks. Each fleet agent is derived, shown on an agent approval screen, approved by its owner, and only then installed, with a derivation, an approval and an installation written to an append-only provenance chain. The new check verifies that chain, reproduces each definition from its record, and recomputes the approval fingerprint from the recorded definition, the derived policy and the key the validator actually holds. See `docs/T-5.4-bound-approval-and-provenance.md`.
+
+## Update (T-5.3)
+
+The fleet's policies are no longer written by the drill. Each agent now gets an agent definition, and its session policy is derived from that definition, the deployment parameters, the stage-one tool catalog and a payee registry. Both the sealed enclave policy and the on-chain hook install data are built from that one derived policy, and the drill checks that the window installed in the validator is the derived one. The unapproved-payee check now uses an address that is not allowlisted either, because derivation produces no dead configuration; the isolation of the payee gate alone lives in the Forge tests. Still 33 checks. See `docs/T-5.3-definitions-catalog-and-derivation.md`.
+
+## Update (T-5.2)
+
+The drill now has 33 checks, and the two fleet agents are installed as payments-only scopes: one approved payee, plus a second allowlisted address that is deliberately not a payee. Two checks were added, each proving both layers: a payment to the allowlisted non-payee is refused by the enclaves and then by the hook when a compromised quorum forces it on chain, and the same for a payment that carries call data, where the payee's `pings` counter shows nothing was called. See `docs/T-5.2-payment-guardrails.md`.
+
+## Update (T-5.1)
+
+The drill now has 31 checks. Before the recovery steps it provisions a treasury account and two agent accounts, each with its own enclave set, distributed key generation, session policy and funded budget, and then checks that the agents cannot use each other's authority, that an agent cannot spend more than it was funded even inside its cap, and that revoking one leaves the other paying. Enclave sets for rotation and for the fleet both live under `.local\enclave-sets`. See `docs/T-5.1-fleet-authority-plane.md`.
+
 ## Update (T-2.7)
 
 The drill now has 27 checks. Before the recovery steps it runs a declined session rotation (nothing changes on chain, the new enclaves are stopped) and a real rotation: a second set of three enclave processes is provisioned and runs the DKG, the policy is shown and approved, issued to the new enclaves, and one owner batch swaps the validator key and window and raises the hook cap; the old enclaves are stopped. Later steps run against the new enclave set. See `docs/T-2.7-session-rotation.md`.

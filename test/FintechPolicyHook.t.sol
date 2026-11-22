@@ -123,7 +123,11 @@ contract FintechPolicyHookTest {
         FintechPolicyHook.AssetRule[] memory rules = new FintechPolicyHook.AssetRule[](2);
         rules[0] = FintechPolicyHook.AssetRule(address(0), nativeCap);
         rules[1] = FintechPolicyHook.AssetRule(address(token), tokenCap);
-        return abi.encode(targets, rules);
+        return abi.encode(targets, rules, payees(), false);
+    }
+
+    function payees() private pure returns (address[] memory empty) {
+        empty = new address[](0);
     }
 
     function installHook(bytes memory data) private {
@@ -824,6 +828,167 @@ contract FintechPolicyHookTest {
 
     function testTheOracleIsFixedAtDeployment() public view {
         require(address(hook.oracle()) == address(oracle), "the oracle must be the deployed one");
+    }
+
+    function paymentConfiguration() private view returns (bytes memory) {
+        address[] memory targets = new address[](2);
+        targets[0] = address(sink);
+        targets[1] = address(drainer);
+        FintechPolicyHook.AssetRule[] memory rules = new FintechPolicyHook.AssetRule[](2);
+        rules[0] = FintechPolicyHook.AssetRule(address(0), NATIVE_CAP);
+        rules[1] = FintechPolicyHook.AssetRule(address(token), TOKEN_CAP);
+        address[] memory approved = new address[](2);
+        approved[0] = address(sink);
+        approved[1] = RECIPIENT;
+        return abi.encode(targets, rules, approved, true);
+    }
+
+    function installPaymentPolicy() private {
+        VM.prank(address(account));
+        account.uninstallModule(HOOK_TYPE, address(hook), hex"");
+        installHook(paymentConfiguration());
+    }
+
+    function transferTo(address recipient, uint256 amount) private view returns (bytes memory) {
+        return single(address(token), 0, abi.encodeCall(SimpleToken.transfer, (recipient, amount)));
+    }
+
+    function expectPayeeRefused(address payee, bytes memory executionCalldata) private {
+        expectFailure(
+            abi.encodeWithSelector(FintechPolicyHook.PayeeNotAllowed.selector, payee), SINGLE_MODE, executionCalldata
+        );
+    }
+
+    function testAPaymentScopeIsDeclaredAtInstallation() public {
+        require(!hook.isPaymentScope(address(account)), "the default scope is not a payment scope");
+        installPaymentPolicy();
+        require(hook.isPaymentScope(address(account)), "the payment scope is declared");
+        require(hook.isPayeeAllowed(address(account), RECIPIENT), "the payee is approved");
+        require(!hook.isPayeeAllowed(address(account), address(0xDEAD)), "a stranger is not a payee");
+    }
+
+    function testAPaymentScopeRefusesATokenTransferToAnUnapprovedPayee() public {
+        installPaymentPolicy();
+        expectPayeeRefused(address(0xDEAD), transferTo(address(0xDEAD), 1e6));
+        require(token.balanceOf(address(0xDEAD)) == 0, "no tokens may move");
+        require(hook.spentInWindow(address(account), address(token)) == 0, "the window must not be charged");
+    }
+
+    function testAPaymentScopeRefusesAValueTransferToAnAllowlistedNonPayee() public {
+        installPaymentPolicy();
+        require(hook.isTargetAllowed(address(account), address(drainer)), "the target is allowlisted");
+        expectPayeeRefused(address(drainer), single(address(drainer), 0.1 ether, ""));
+        require(address(drainer).balance == 0, "no value may move");
+    }
+
+    function testAPaymentScopeRefusesAnApprovalEvenToAnApprovedPayee() public {
+        installPaymentPolicy();
+        expectFailure(
+            abi.encodeWithSelector(FintechPolicyHook.ApprovalNotAllowed.selector, address(token)),
+            SINGLE_MODE,
+            approval(1e6)
+        );
+        require(token.allowance(address(account), RECIPIENT) == 0, "no allowance may be granted");
+    }
+
+    function testAPaymentScopeRefusesCallDataOnAnApprovedPayee() public {
+        installPaymentPolicy();
+        expectFailure(
+            abi.encodeWithSelector(FintechPolicyHook.CallDataNotAllowed.selector, address(sink)),
+            SINGLE_MODE,
+            pingExecution()
+        );
+        require(sink.pings() == 0, "nothing may execute");
+    }
+
+    function testAPaymentScopeAllowsValueOnlyPaymentsAndTokenTransfersToPayees() public {
+        installPaymentPolicy();
+        runSingle(sendValue(0.1 ether));
+        runSingle(tokenTransfer(1e6));
+        require(address(sink).balance == 0.1 ether, "the payee was paid");
+        require(token.balanceOf(RECIPIENT) == 1e6, "the token payee was paid");
+        require(hook.spentInWindow(address(account), address(0)) == 0.1 ether, "the window is charged");
+    }
+
+    function testASanctionedPayeeIsRefusedBeforeThePayeeCheck() public {
+        installPaymentPolicy();
+        oracle.setSanctioned(RECIPIENT, true);
+        expectSanctioned(RECIPIENT, tokenTransfer(1e6));
+        oracle.setSanctioned(address(0xDEAD), true);
+        expectSanctioned(address(0xDEAD), transferTo(address(0xDEAD), 1e6));
+    }
+
+    function testOnePaymentToAnUnapprovedPayeeRefusesTheWholeBatch() public {
+        installPaymentPolicy();
+        Execution[] memory executions = new Execution[](2);
+        executions[0] = Execution(address(sink), 0.1 ether, "");
+        executions[1] = Execution(address(token), 0, abi.encodeCall(SimpleToken.transfer, (address(0xDEAD), 1e6)));
+        expectFailure(
+            abi.encodeWithSelector(FintechPolicyHook.PayeeNotAllowed.selector, address(0xDEAD)),
+            BATCH_MODE,
+            batchOf(executions)
+        );
+        require(address(sink).balance == 0, "the first payment must not survive");
+    }
+
+    function testTheAccountCanChangeItsOwnPayeeAllowlist() public {
+        installPaymentPolicy();
+        VM.prank(address(account));
+        hook.revokePayee(RECIPIENT);
+        expectPayeeRefused(RECIPIENT, tokenTransfer(1e6));
+        VM.prank(address(account));
+        hook.allowPayee(RECIPIENT);
+        runSingle(tokenTransfer(1e6));
+        require(token.balanceOf(RECIPIENT) == 1e6, "the restored payee is paid");
+    }
+
+    function testOnlyTheAccountChangesItsOwnPayees() public {
+        installPaymentPolicy();
+        VM.prank(RECIPIENT);
+        VM.expectRevert(abi.encodeWithSelector(FintechPolicyHook.NotConfigured.selector, RECIPIENT));
+        hook.allowPayee(address(0x1234));
+    }
+
+    function testInfrastructureCannotBeApprovedAsAPayee() public {
+        installPaymentPolicy();
+        VM.startPrank(address(account));
+        VM.expectRevert(FintechPolicyHook.InvalidConfiguration.selector);
+        hook.allowPayee(address(0));
+        VM.expectRevert(FintechPolicyHook.InvalidConfiguration.selector);
+        hook.allowPayee(address(account));
+        VM.expectRevert(FintechPolicyHook.InvalidConfiguration.selector);
+        hook.allowPayee(address(hook));
+        VM.expectRevert(FintechPolicyHook.InvalidConfiguration.selector);
+        hook.allowPayee(ENTRY_POINT);
+        VM.stopPrank();
+    }
+
+    function testAPaymentPolicyWithoutPayeesCanPayNobody() public {
+        VM.prank(address(account));
+        account.uninstallModule(HOOK_TYPE, address(hook), hex"");
+        address[] memory targets = new address[](1);
+        targets[0] = address(sink);
+        FintechPolicyHook.AssetRule[] memory rules = new FintechPolicyHook.AssetRule[](1);
+        rules[0] = FintechPolicyHook.AssetRule(address(0), NATIVE_CAP);
+        installHook(abi.encode(targets, rules, payees(), true));
+        expectPayeeRefused(address(sink), sendValue(0.1 ether));
+    }
+
+    function testAPaymentScopeCanBeUninstalledAndIsThenGone() public {
+        installPaymentPolicy();
+        VM.prank(address(account));
+        account.uninstallModule(HOOK_TYPE, address(hook), hex"");
+        require(!hook.isInitialized(address(account)), "the policy must be cleared");
+        require(!hook.isPaymentScope(address(account)), "the payment scope must be cleared");
+        require(!hook.isPayeeAllowed(address(account), RECIPIENT), "the payees must be cleared");
+    }
+
+    function testANonPaymentScopeKeepsItsWiderPowers() public {
+        require(!hook.isPaymentScope(address(account)), "the default scope is not a payment scope");
+        runSingle(pingExecution());
+        runSingle(approval(1e6));
+        require(sink.pings() == 1, "call data is allowed outside a payment scope");
+        require(token.allowance(address(account), RECIPIENT) == 1e6, "approvals are allowed outside it");
     }
 }
 

@@ -8,6 +8,7 @@ from fintech_agent.domain.session_policy import (
     AssetRule,
     Movement,
     PolicyViolationError,
+    SessionPolicy,
     check_operation,
 )
 from fintech_agent.domain.session_policy_document import (
@@ -220,3 +221,88 @@ def test_a_policy_survives_its_document_form() -> None:
 
     assert policy_from_document(policy_to_document(policy)) == policy
     assert policy.cap_of(NATIVE_ASSET) == ETHER
+
+
+def payment_policy(
+    payees: frozenset[str] = frozenset({TARGET, RECIPIENT}),
+) -> SessionPolicy:
+    return replace(build_policy(), payments_only=True, allowed_payees=payees)
+
+
+def paid(call_data: bytes, policy: SessionPolicy | None = None) -> tuple[Movement, ...]:
+    return check_operation(policy or payment_policy(), build_operation(call_data), NOW)
+
+
+def payment_refused(call_data: bytes, reason: str) -> None:
+    with pytest.raises(PolicyViolationError, match=reason):
+        paid(call_data)
+
+
+def test_a_payments_only_policy_allows_a_value_transfer_to_a_payee() -> None:
+    assert paid(single(TARGET, ETHER // 2)) == (Movement(NATIVE_ASSET, ETHER // 2),)
+
+
+def test_a_payments_only_policy_refuses_call_data() -> None:
+    payment_refused(
+        single(TARGET, 1, bytes.fromhex("5c36b186")), "cannot carry call data"
+    )
+    payment_refused(
+        single(TARGET, 0, bytes.fromhex("5c36b186")), "cannot carry call data"
+    )
+
+
+def test_a_payments_only_policy_refuses_an_allowlisted_target_that_is_not_a_payee() -> (
+    None
+):
+    with pytest.raises(PolicyViolationError, match="the payee .* is not allowed"):
+        paid(single(TARGET, ETHER // 2), payment_policy(frozenset({RECIPIENT})))
+
+
+def test_a_payments_only_policy_refuses_an_approval() -> None:
+    payment_refused(
+        single(TOKEN, 0, token_call(APPROVE, RECIPIENT, 1)), "cannot approve spending"
+    )
+
+
+def test_a_payments_only_policy_refuses_a_transfer_to_a_stranger() -> None:
+    payment_refused(
+        single(TOKEN, 0, token_call(TRANSFER, STRANGER, 1)),
+        "the payee .* is not allowed",
+    )
+
+
+def test_a_payments_only_policy_allows_a_transfer_to_a_payee() -> None:
+    movements = paid(single(TOKEN, 0, token_call(TRANSFER, RECIPIENT, TOKEN_CAP)))
+    assert movements == (Movement(TOKEN, TOKEN_CAP),)
+
+
+def test_a_payments_only_policy_still_enforces_the_cap_and_the_allowlist() -> None:
+    with pytest.raises(PolicyViolationError, match="not allowed"):
+        paid(single(STRANGER, 1))
+    with pytest.raises(PolicyViolationError, match="malformed address"):
+        paid(single(TOKEN, 0, bytes.fromhex("a9059cbb") + b"\x01" + bytes(63)))
+
+
+def test_payees_need_a_payments_only_policy() -> None:
+    with pytest.raises(PolicyViolationError, match="only meaningful"):
+        replace(build_policy(), allowed_payees=frozenset({RECIPIENT}))
+
+
+def test_a_payee_must_be_a_normalized_address() -> None:
+    with pytest.raises(PolicyViolationError, match="lowercase"):
+        payment_policy(frozenset({TARGET.upper().replace("0X", "0x")}))
+
+
+def test_the_document_round_trip_keeps_the_payment_fields() -> None:
+    policy = payment_policy()
+    restored = policy_from_document(policy_to_document(policy))
+    assert restored == policy
+    assert policy_to_document(policy)["payments_only"] is True
+    assert policy_to_document(build_policy())["allowed_payees"] == []
+
+
+def test_an_ordinary_policy_keeps_its_wider_powers() -> None:
+    assert check(single(TARGET, 0, bytes.fromhex("5c36b186"))) == ()
+    assert check(single(TOKEN, 0, token_call(APPROVE, STRANGER, 1))) == (
+        Movement(TOKEN, 1),
+    )

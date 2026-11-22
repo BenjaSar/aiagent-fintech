@@ -5,11 +5,17 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
+from fintech_agent.application.enclave_tenancy import PRIMARY_TENANT
+from fintech_agent.application.ports import SealedDataNotFoundError
 from fintech_agent.application.session_rotation import RetirementFailedError
 from fintech_agent.application.sign_user_operation import GroupConfiguration
 from fintech_agent.composition.local_enclaves import (
+    EnclaveSet,
     ProvisioningLayout,
+    admit_tenant,
+    evict_tenant,
     generate_key_with_enclaves,
     issue_session_policy,
     provision_ceremony_identities,
@@ -27,6 +33,14 @@ class EnclaveFleetError(Exception):
     pass
 
 
+class CeremonySet(Protocol):
+    def generate(self) -> GroupConfiguration: ...
+
+    def discard(self) -> None: ...
+
+    def require_enclaves(self) -> EnclaveSet: ...
+
+
 @dataclass(frozen=True)
 class FleetConfiguration:
     base_directory: Path
@@ -39,14 +53,14 @@ class LocalEnclaveFleet:
     def __init__(self, configuration: FleetConfiguration) -> None:
         self._configuration = configuration
 
-    def launch(self) -> Path:
+    def launch(self, tenant: str = PRIMARY_TENANT) -> EnclaveSet:
         configuration = self._configuration
         root = configuration.base_directory / (
-            f"rotation-{secrets.token_hex(DIRECTORY_SUFFIX_BYTES)}"
+            f"set-{secrets.token_hex(DIRECTORY_SUFFIX_BYTES)}"
         )
         ports = dict(enumerate(_free_ports(configuration.size), start=1))
         provision_ceremony_identities(
-            ProvisioningLayout(root, configuration.threshold, ports)
+            ProvisioningLayout(root, configuration.threshold, ports, tenant)
         )
         processes = [self._start(root, identifier) for identifier in ports]
         (root / PID_FILE_NAME).write_text(
@@ -54,7 +68,10 @@ class LocalEnclaveFleet:
         )
         for port in ports.values():
             _wait_until_listening(port)
-        return root
+        return EnclaveSet(root, tenant)
+
+    def admit(self, enclaves: EnclaveSet) -> None:
+        admit_tenant(enclaves)
 
     def stop(self, root: Path) -> None:
         pid_file = root / PID_FILE_NAME
@@ -84,35 +101,62 @@ class LocalEnclaveFleet:
 
 
 class LocalKeyCeremony:
-    def __init__(self, fleet: LocalEnclaveFleet) -> None:
+    def __init__(self, fleet: LocalEnclaveFleet, tenant: str = PRIMARY_TENANT) -> None:
         self._fleet = fleet
-        self.root: Path | None = None
+        self._tenant = tenant
+        self.enclaves: EnclaveSet | None = None
 
     def generate(self) -> GroupConfiguration:
-        root = self._fleet.launch()
-        self.root = root
+        enclaves = self._fleet.launch(self._tenant)
+        self.enclaves = enclaves
         try:
-            return generate_key_with_enclaves(root).configuration
+            return generate_key_with_enclaves(enclaves).configuration
         except Exception:
-            self._fleet.stop(root)
+            self._fleet.stop(enclaves.root)
             raise
 
     def discard(self) -> None:
-        if self.root is not None:
-            self._fleet.stop(self.root)
+        if self.enclaves is not None:
+            self._fleet.stop(self.enclaves.root)
 
-    def require_root(self) -> Path:
-        if self.root is None:
+    def require_enclaves(self) -> EnclaveSet:
+        if self.enclaves is None:
             raise EnclaveFleetError("no key ceremony has run")
-        return self.root
+        return self.enclaves
+
+
+class TenantKeyCeremony:
+    def __init__(self, fleet: LocalEnclaveFleet, enclaves: EnclaveSet) -> None:
+        self._fleet = fleet
+        self._enclaves = enclaves
+        self.admitted: EnclaveSet | None = None
+
+    def generate(self) -> GroupConfiguration:
+        self._fleet.admit(self._enclaves)
+        self.admitted = self._enclaves
+        try:
+            return generate_key_with_enclaves(self._enclaves).configuration
+        except Exception:
+            self.discard()
+            raise
+
+    def discard(self) -> None:
+        if self.admitted is not None:
+            evict_tenant(self.admitted)
+            self.admitted = None
+
+    def require_enclaves(self) -> EnclaveSet:
+        if self.admitted is None:
+            raise EnclaveFleetError("no key ceremony has run")
+        return self.admitted
 
 
 class LocalPolicyIssuer:
-    def __init__(self, ceremony: LocalKeyCeremony) -> None:
+    def __init__(self, ceremony: CeremonySet) -> None:
         self._ceremony = ceremony
 
     def issue(self, policy: SessionPolicy) -> None:
-        issue_session_policy(self._ceremony.require_root(), policy)
+        issue_session_policy(self._ceremony.require_enclaves(), policy)
 
 
 class LocalPreviousSession:
@@ -125,6 +169,17 @@ class LocalPreviousSession:
         if not pid_file.exists():
             raise RetirementFailedError("the previous enclaves have no process list")
         self._fleet.stop(self._root)
+
+
+class PreviousTenant:
+    def __init__(self, enclaves: EnclaveSet) -> None:
+        self._enclaves = enclaves
+
+    def retire(self) -> None:
+        try:
+            evict_tenant(self._enclaves)
+        except (SealedDataNotFoundError, OSError) as failure:
+            raise RetirementFailedError(str(failure)) from failure
 
 
 def _free_ports(count: int) -> list[int]:

@@ -16,6 +16,7 @@ from tests.policy_fixtures import (
     ENTRY_POINT,
     ETHER,
     HOOK,
+    RECIPIENT,
     STRANGER,
     TARGET,
     TOKEN,
@@ -94,3 +95,37 @@ def test_a_rotation_cannot_move_the_anchors_or_change_the_window(
 
 def test_the_hook_address_is_part_of_the_anchor() -> None:
     assert build_policy().hook == HOOK
+
+
+def test_added_and_removed_payees_become_allow_and_revoke_calls() -> None:
+    base = replace(
+        build_policy(), payments_only=True, allowed_payees=frozenset({TARGET})
+    )
+    following = replace(base, allowed_payees=frozenset({RECIPIENT}))
+    assert hook_changes(PolicyTransition(base, following)) == (
+        HookChange(HookChangeKind.REVOKE_PAYEE, TARGET),
+        HookChange(HookChangeKind.ALLOW_PAYEE, RECIPIENT),
+    )
+
+
+def test_payee_changes_follow_the_target_and_cap_changes() -> None:
+    base = replace(
+        build_policy(), payments_only=True, allowed_payees=frozenset({TARGET})
+    )
+    following = replace(
+        base,
+        allowed_targets=frozenset({STRANGER}),
+        allowed_payees=frozenset({TARGET, STRANGER}),
+    )
+    kinds = [change.kind for change in hook_changes(PolicyTransition(base, following))]
+    assert kinds == [
+        HookChangeKind.REVOKE_TARGET,
+        HookChangeKind.ALLOW_TARGET,
+        HookChangeKind.ALLOW_PAYEE,
+    ]
+
+
+def test_a_rotation_cannot_change_the_payments_only_flag() -> None:
+    base = build_policy()
+    with pytest.raises(TransitionError, match="payments-only"):
+        hook_changes(PolicyTransition(base, replace(base, payments_only=True)))

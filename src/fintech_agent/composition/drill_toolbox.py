@@ -1,7 +1,8 @@
 import secrets
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from fintech_agent.adapters.bundler_rpc import (
@@ -18,14 +19,17 @@ from fintech_agent.adapters.foundry_toolkit import (
     FunctionCall,
 )
 from fintech_agent.application.enclave_node import KEY_SHARE_NAME
+from fintech_agent.application.enclave_tenancy import PRIMARY_TENANT
 from fintech_agent.application.key_share_record import KeyShareRecord
 from fintech_agent.application.sign_user_operation import (
     SigningRequest,
     SignUserOperation,
 )
 from fintech_agent.composition.local_enclaves import (
+    EnclaveSet,
+    TenantSlot,
     build_signing_setup,
-    node_storage,
+    tenant_storage,
 )
 from fintech_agent.domain.frost.aggregation import (
     ParticipantCommitment,
@@ -98,7 +102,7 @@ class DrillEnvironment:
     enclave_root: Path
     halt_enclave: Callable[[Path, int], None]
     halt_bundler: Callable[[], None]
-    rotation_directory: Path
+    enclave_sets_directory: Path
     enclave_script: Path
 
 
@@ -153,6 +157,20 @@ class KeyedOperation:
     private_key: str
 
 
+@dataclass(frozen=True)
+class AccountContext:
+    account: str
+    enclave_root: Path
+    policy: SessionPolicy | None
+    tenant: str = PRIMARY_TENANT
+
+
+@dataclass(frozen=True)
+class OwnerOperation:
+    init_code: bytes
+    call_data: bytes
+
+
 class DrillToolbox:
     def __init__(self, environment: DrillEnvironment) -> None:
         self.environment = environment
@@ -160,6 +178,7 @@ class DrillToolbox:
         self._actors: Actors | None = None
         self.session_valid_until = 0
         self.enclave_root = environment.enclave_root
+        self.enclave_tenant = PRIMARY_TENANT
         self.active_policy: SessionPolicy | None = None
 
     @property
@@ -411,17 +430,9 @@ class DrillToolbox:
         return installed == "true"
 
     def owner_installs(self, install: ModuleInstall) -> None:
-        operation = self.unsigned(
-            UnsignedRequest(
-                b"",
-                self.next_owner_nonce(),
-                self.self_call_data(self.install_call(install)),
-            )
+        self.owner_submits(
+            OwnerOperation(b"", self.self_call_data(self.install_call(install)))
         )
-        signed = self.sign_with_key(
-            KeyedOperation(self.estimated(operation), self.actors.owner_key)
-        )
-        self.submit_through_bundler(signed)
 
     def owner_uninstalls(self, install: ModuleInstall) -> None:
         uninstall = self.environment.foundry.encode_call(
@@ -430,15 +441,7 @@ class DrillToolbox:
                 (install.module_type, install.module, "0x"),
             )
         )
-        operation = self.unsigned(
-            UnsignedRequest(
-                b"", self.next_owner_nonce(), self.self_call_data(uninstall)
-            )
-        )
-        signed = self.sign_with_key(
-            KeyedOperation(self.estimated(operation), self.actors.owner_key)
-        )
-        self.submit_through_bundler(signed)
+        self.owner_submits(OwnerOperation(b"", self.self_call_data(uninstall)))
 
     def owner_install_included_directly(self, install: ModuleInstall) -> None:
         operation = self.unsigned(
@@ -457,8 +460,59 @@ class DrillToolbox:
         call_data = self.environment.foundry.encode_call(
             FunctionCall(EXECUTE_SIGNATURE, (BATCH_CALL_MODE, "0x" + payload.hex()))
         )
+        self.owner_submits(OwnerOperation(b"", call_data))
+
+    def current_context(self) -> AccountContext:
+        return AccountContext(
+            self.actors.account,
+            self.enclave_root,
+            self.active_policy,
+            self.enclave_tenant,
+        )
+
+    def switch_to(self, context: AccountContext) -> None:
+        self._actors = replace(self.actors, account=context.account)
+        self.enclave_root = context.enclave_root
+        self.enclave_tenant = context.tenant
+        self.active_policy = context.policy
+
+    @property
+    def enclaves(self) -> EnclaveSet:
+        return EnclaveSet(self.enclave_root, self.enclave_tenant)
+
+    @contextmanager
+    def acting_as(self, context: AccountContext) -> Iterator[None]:
+        saved = self.current_context()
+        self.switch_to(context)
+        try:
+            yield
+        finally:
+            self.switch_to(saved)
+
+    def predicted_account(self, salt: str) -> str:
+        return self.environment.foundry.call(
+            ContractCall(
+                self.contracts.factory,
+                FunctionCall(
+                    "getAddress(address,bytes32)(address)", (self.actors.owner, salt)
+                ),
+            )
+        )
+
+    def creation_init_code(self, salt: str) -> bytes:
+        creation = self.environment.foundry.encode_call(
+            FunctionCall("createAccount(address,bytes32)", (self.actors.owner, salt))
+        )
+        return bytes.fromhex(self.contracts.factory.removeprefix("0x")) + creation
+
+    def deposit_for_gas(self, address: str) -> None:
+        self._send(ENTRY_POINT, FunctionCall("depositTo(address)", (address,)), ETHER)
+
+    def owner_submits(self, request: OwnerOperation) -> None:
         operation = self.unsigned(
-            UnsignedRequest(b"", self.next_owner_nonce(), call_data)
+            UnsignedRequest(
+                request.init_code, self.next_owner_nonce(), request.call_data
+            )
         )
         signed = self.sign_with_key(
             KeyedOperation(self.estimated(operation), self.actors.owner_key)
@@ -620,7 +674,7 @@ class DrillToolbox:
 
     def quorum_signed(self, operation: UserOperation) -> UserOperation:
         digest = self.operation_hash(operation)
-        setup = build_signing_setup(self.enclave_root)
+        setup = build_signing_setup(self.enclaves)
         signature = SignUserOperation(setup).execute(SigningRequest(digest, operation))
         return operation.with_signature(signature.serialize())
 
@@ -628,7 +682,9 @@ class DrillToolbox:
         digest = self.operation_hash(operation)
         records = [
             KeyShareRecord.deserialize(
-                node_storage(self.enclave_root, identifier).unseal(KEY_SHARE_NAME)
+                tenant_storage(
+                    TenantSlot(self.enclave_root, identifier, self.enclave_tenant)
+                ).unseal(KEY_SHARE_NAME)
             )
             for identifier in COMPROMISED_QUORUM
         ]
@@ -663,7 +719,9 @@ class DrillToolbox:
 
     def forge_with_one_share(self, digest: bytes) -> SchnorrSignature:
         record = KeyShareRecord.deserialize(
-            node_storage(self.enclave_root, 1).unseal(KEY_SHARE_NAME)
+            tenant_storage(
+                TenantSlot(self.enclave_root, 1, self.enclave_tenant)
+            ).unseal(KEY_SHARE_NAME)
         )
         nonces, commitments = commit(record.secret_share, fresh_nonce_randomness())
         package = SigningPackage(

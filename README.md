@@ -6,6 +6,8 @@ A local, development-only pipeline for a non-custodial agentic wallet: an ERC-43
 
 The plan is in `..\IMPLEMENTATION-PLAN.md` and the decisions behind it in `..\ADR-001` to `..\ADR-005`. Each task has a write-up under [docs](docs), listed at the end.
 
+The next phase turns this into an agent factory: a system that itself authors fintech agents, each one granted its authority — if it is given any — by a single human approval. The target, the gaps and the phased plan are in [ADR-006](docs/ADR-006-agent-factory-target.md), the [gap register](docs/agent-factory-gap-register.md) and the [program plan](docs/agent-factory-program-plan.md). Its first task is built: the authority plane now holds a fleet of per-agent authorities ([T-5.1](docs/T-5.1-fleet-authority-plane.md)) and those agents are restricted to paying approved payees ([T-5.2](docs/T-5.2-payment-guardrails.md)), and their authority is derived from an agent definition rather than written by hand ([T-5.3](docs/T-5.3-definitions-catalog-and-derivation.md)) and granted by one owner approval bound to that definition, its policy and its key, with an append-only record ([T-5.4](docs/T-5.4-bound-approval-and-provenance.md)). An agent also now runs: a bounded loop with four tools pays an approved payee once per idempotency key and cannot reach a signer ([T-5.5](docs/T-5.5-payment-agent-runtime.md)). Definitions are now authored through a gate that refuses any proposal beyond the owner's task specification ([T-5.6](docs/T-5.6-generator-and-synthesis-gate.md)). Every candidate is then evaluated against seven checks and seven scenarios that run the real enclave-side authorizer, and nothing reaches the owner without passing ([T-5.7](docs/T-5.7-evaluation-harness.md)). Each agent now has a lifecycle: a bounded development loop that iterates on a failed candidate but may never widen its authority, an expiry scheduler that renews the same authority unattended, and a teardown that leaves no key, allowance or enclave ([T-5.8](docs/T-5.8-closed-loop-and-lifecycle.md)). The fleet can now also be operated: a halt the enclaves enforce themselves and that the owner can order with every service down, several agents sharing one enclave set as tenancies that cannot reach each other, and a causal trace that reconstructs a payment sequence across agents ([T-5.9](docs/T-5.9-fleet-operations.md)). The factory now authors a second kind of agent: an analysis agent that reads and reports and holds no authority at all — no account, no session key, no payee, no asset and no budget ([T-5.10](docs/T-5.10-analysis-agents.md), under [ADR-007](docs/ADR-007-stage-2-agent-types.md)). What is missing is the model itself: the proposer and the agent's decisions are both deterministic stand-ins behind ports, because the model choice and the legal review are still open.
+
 ## What the pipeline does
 
 ```
@@ -32,7 +34,7 @@ Two independent layers refuse bad operations. An enclave refuses to sign an oper
 |---|---|---|
 | Smart account and factory | `contracts/FintechModularAccount.sol`, `FintechAccountFactory.sol` | ERC-7579 modular account on OpenZeppelin 5.6.1; `executeAsSession` is the only entry point for session operations |
 | Session validator | `contracts/FrostSessionValidator.sol`, `FrostSecp256k1.sol` | Verifies a FROST (RFC 9591) Schnorr signature for one session key and time window |
-| Policy hook | `contracts/FintechPolicyHook.sol` | Allowlist, per-asset rolling 24 h caps, token transfer and approve parsing, sanctions screening (fail closed) |
+| Policy hook | `contracts/FintechPolicyHook.sol` | Allowlist, per-asset rolling 24 h caps, token transfer and approve parsing, sanctions screening (fail closed), and a payments-only profile with an approved-payee list |
 | Module registry | `contracts/FintechModuleRegistry.sol` | ERC-7484-style attestations; the account refuses to install an unattested module |
 | Social recovery, paymaster | `contracts/SocialRecoveryModule.sol`, `FintechPaymaster.sol` | Guardian recovery of the owner; gas sponsorship that never confers spending authority |
 | Development contracts | `contracts/dev/` | A ping target and a sanctions oracle with open setters. Local use only |
@@ -81,12 +83,12 @@ This is the main entry point. It stops anything left over, wipes `.local\enclave
 2. seals identities for three enclaves and starts them;
 3. runs the distributed key generation across the three processes;
 4. starts the Alto bundler against the chain;
-5. runs the 27 checks in `scripts\run_local_drill.py`;
+5. runs the 46 checks in `scripts\run_local_drill.py`;
 6. stops the bundler, enclaves and chain, even on failure.
 
-Each check prints `[PASS]` or `[FAIL]` with a detail line. The exit code is 0 only if all 27 ran and passed. A run takes a few minutes.
+Each check prints `[PASS]` or `[FAIL]` with a detail line. The exit code is 0 only if all 46 ran and passed. A run takes a few minutes.
 
-### The 27 checks
+### The 46 checks
 
 | Area | Checks |
 |---|---|
@@ -96,6 +98,19 @@ Each check prints `[PASS]` or `[FAIL]` with a detail line. The exit code is 0 on
 | On-chain policy | Plain `execute` and self-calls are refused; the rolling native cap is enforced; a sanctioned target is refused although the enclaves signed; an oracle outage fails closed for sessions but not for the owner |
 | Module install gate | An unattested module cannot be installed; a revoked attestation blocks installation again |
 | Rotation | A declined rotation changes nothing; a real rotation swaps the key, window and hook cap in one owner batch; the old quorum is then rejected and the new one executes |
+| Generation | Each agent is generated from a task specification that bounds its tools, payees, caps and window; a proposal that doubles its own cap is refused and recorded nowhere |
+| Evaluation | Every candidate is evaluated before approval; one that cannot check a retry fails and is refused promotion, with nothing recorded |
+| Lifecycle | A failed candidate is iterated inside an attempt and cost budget; an iteration that would widen authority is escalated instead of installed |
+| Approval | Every agent is derived, approved by its owner and only then installed, with the chain of records verified and the fingerprint recomputed from the key the validator holds |
+| Fleet | A treasury and two agent accounts hold separate, funded authorities; neither agent can use the other's key, policy or window; an agent cannot spend more than it was funded; revoking one leaves the other working |
+| Tenancy | Three agents run on one set of three enclave processes as separate tenancies, each with its own key share, policy and ledger; a tenant presenting its own token for another tenancy is refused |
+| Runtime | An agent's own loop lists its payees, reads its balance and pays the approved payee once; the same task again pays nothing more; a task naming a stranger never reaches the chain |
+| Payments | A payment agent cannot pay an address its owner did not approve, and cannot attach call data to a payment; the enclaves refuse first, then the hook refuses a forced attempt |
+| Renewal | One tick of the scheduler rotates every session due for renewal, unattended, when the authority is unchanged, and refuses one that would grow |
+| Observability | A trace of three runs by two agents is reconstructed as one causal chain that crosses between the agents twice, which neither agent's own record shows |
+| Halt | A fleet halt written into the enclaves' own storage refuses every agent and moves nothing, and both pay again once it is lifted; an agent halt stops one agent alone, and the owner still revokes a halted agent with no bundler and no enclave in the path |
+| Analysis | An analysis agent is generated, evaluated and approved with no account, no session key, no payee, no asset and no budget; a generator that proposes a paying tool for it is refused, no policy can be derived for it, its screen says it holds nothing, and it reads and reports but cannot pay |
+| Retirement | A retired agent keeps no session key, no allowance (swept back to the treasury) and no reachable enclave tenancy, while the rest of the fleet keeps its own |
 | Paymaster | A sponsored session operation costs the account nothing; sponsorship is not authority |
 | Revocation and recovery | The owner revokes the session with all company services offline; guardians recover the account; the old owner is rejected afterwards |
 
@@ -115,7 +130,7 @@ Static checks used throughout:
 .\.tools\foundry\bin\forge.exe fmt --check
 ```
 
-Last verified results (2026-11-17): 459 Python tests and 204 Solidity tests passing, `forge fmt --check` clean, and the drill passing 27 of 27 on three consecutive runs.
+Last verified results (2026-11-21): 954 Python tests and 218 Solidity tests passing, `forge fmt --check` clean, and the drill passing 46 of 46 on two consecutive runs.
 
 ## Run the pieces by hand
 
@@ -139,9 +154,15 @@ contracts/     Solidity sources (dev/ holds local-only helpers)
 test/          Foundry tests
 src/fintech_agent/
   domain/        pure logic: FROST, DKG, user operation hash, session policy,
-                 approval screen, Agent Card, relationship graph
+                 approval screen, Agent Card, relationship graph, fleet identity,
+                 agent definition, tool catalog, task specification
   application/   use cases and ports: signing, DKG, enclave node, policy
-                 authorizer, rotation, agent directory
+                 authorizer, rotation, agent directory, fleet ledger,
+                 payee registry, policy derivation, provenance log,
+                 agent runtime, agent tools, payment journal, agent synthesis,
+                 agent evaluation, agent promotion, simulated settlement,
+                 agent lifecycle, agent development, session schedule,
+                 agent retirement
   adapters/      DPAPI storage, X25519 channel, HTTP enclave, bundler RPC,
                  Foundry toolkit, Ed25519 card signatures
   composition/   local wiring and the drill
@@ -154,10 +175,10 @@ docs/          one write-up per task
 
 ## What is real, simulated or missing
 
-- **Real:** the contracts, the FROST maths and DKG, the on-chain signature check, enclave-side policy re-validation, the hook, the registry gate, rotation and recovery, and a real bundler accepting operations.
+- **Real:** the contracts, the FROST maths and DKG, the on-chain signature check, enclave-side policy re-validation, the hook, the registry gate, rotation and recovery, a fleet of per-agent accounts with their own keys, caps and funded budgets, and a real bundler accepting operations.
 - **Simulated:** remote attestation (always "simulated"), enclave isolation (ordinary processes), the sanctions oracle (an open dev contract), the user in the rotation ceremony (a script), all keys.
 - **Not run:** Base Sepolia or any public chain; a bundler with ERC-7562 rule enforcement (Alto runs with safe mode off here); any audit; any measurement of the latency targets.
-- **Not built yet:** the agent loop and MCP tool servers, A2A serving, the x402 client, ERC-8004 identity, the halt control, any graphical approval screen, and the Phase 4 research agent. The Agent Card and ReBAC code exists but nothing calls it.
+- **Not built yet:** MCP tool servers, A2A serving, the x402 client, ERC-8004 identity, the halt control, any graphical approval screen, and the Phase 4 research agent. The Agent Card and ReBAC code exists but nothing calls it.
 
 ## Documentation
 
@@ -171,6 +192,18 @@ docs/          one write-up per task
 | [step 9](docs/step-9-revocation-paymaster-recovery.md) | Revocation, paymaster, social recovery |
 | [T-2.1](docs/T-2.1-enclave-revalidation.md), [T-2.2](docs/T-2.2-policy-hook.md), [T-2.3](docs/T-2.3-sanctions-screening.md), [T-2.4](docs/T-2.4-module-registry-and-install-gate.md) | Enclave re-validation, hook, sanctions, install gate |
 | [T-2.5](docs/T-2.5-rebac-and-agent-cards.md), [T-2.6](docs/T-2.6-policy-approval-decoder.md), [T-2.7](docs/T-2.7-session-rotation.md) | ReBAC and Agent Cards, approval screen, session rotation |
+| [ADR-006](docs/ADR-006-agent-factory-target.md), [gap register](docs/agent-factory-gap-register.md), [program plan](docs/agent-factory-program-plan.md) | The agent-factory target (C4, payment agents first), every gap to it, and the plan T-5.0 to T-5.10 |
+| [ADR-007](docs/ADR-007-stage-2-agent-types.md) | Accepted: which stage 2 agent types open, in what order and on what gates. The analysis type is open; treasury, trading and x402 stay closed |
+| [T-5.1](docs/T-5.1-fleet-authority-plane.md) | One account, enclave set, policy and funded budget per agent, with a treasury that holds no authority |
+| [T-5.2](docs/T-5.2-payment-guardrails.md) | The payments-only scope: approved payees, no call data, no token approvals |
+| [T-5.3](docs/T-5.3-definitions-catalog-and-derivation.md) | Agent definitions and their digest, the stage-one tool catalog, the payee registry, and policy derivation |
+| [T-5.4](docs/T-5.4-bound-approval-and-provenance.md) | The agent approval screen, the fingerprint binding definition, policy and key, and the provenance chain |
+| [T-5.5](docs/T-5.5-payment-agent-runtime.md) | The agent runtime: four tools, a payment journal for idempotency, and isolation from every signer |
+| [T-5.6](docs/T-5.6-generator-and-synthesis-gate.md) | The task specification, the synthesis gate, the injection suite, and what is still missing without a model |
+| [T-5.7](docs/T-5.7-evaluation-harness.md) | The evaluation harness: checks, scenarios against the real authorizer, and the promotion gate |
+| [T-5.8](docs/T-5.8-closed-loop-and-lifecycle.md) | The lifecycle, the bounded loop, the monotonic rule, the expiry scheduler and the teardown |
+| [T-5.9](docs/T-5.9-fleet-operations.md) | Fleet operations: the halt switch, multi-tenant enclaves, the interaction trace and the renewal scheduler |
+| [T-5.10](docs/T-5.10-analysis-agents.md) | The analysis agent type: a second type that holds no authority, and the gates that keep it that way |
 
 Each doc lists its own risks and limits; read them before relying on any part.
 

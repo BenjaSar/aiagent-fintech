@@ -2,10 +2,10 @@ $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $pidFile = Join-Path $repositoryRoot ".local\enclaves\enclaves.pid"
-$rotationRoot = Join-Path $repositoryRoot ".local\rotations"
+$enclaveSetsRoot = Join-Path $repositoryRoot ".local\enclave-sets"
 
-if (Test-Path $rotationRoot) {
-    foreach ($rotationPidFile in Get-ChildItem -Path $rotationRoot -Recurse -Filter "enclaves.pid") {
+if (Test-Path $enclaveSetsRoot) {
+    foreach ($rotationPidFile in Get-ChildItem -Path $enclaveSetsRoot -Recurse -Filter "enclaves.pid") {
         foreach ($processIdentifier in Get-Content $rotationPidFile.FullName) {
             Stop-Process -Id ([int]$processIdentifier) -ErrorAction SilentlyContinue
         }

@@ -1,10 +1,11 @@
 import hashlib
 import json
 import re
-import unicodedata
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
+
+from .plain_text import is_plain_text
 
 SIGNATURE_TYPE = "Signature2026"
 CARD_TYPE_OF_ACCESS_POLICY = "ReBAC"
@@ -48,7 +49,6 @@ HOST_NAME = re.compile(
     r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+"
 )
 TOP_LEVEL_DOMAIN_LABEL = re.compile(r"[a-z][a-z0-9-]*")
-FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 PUNYCODE_PREFIX = "xn--"
 DEFAULT_HTTPS_PORT = 443
 
@@ -186,9 +186,7 @@ def _mapping(value: Any, expected: frozenset[str], where: str) -> dict[str, Any]
 def _text(value: Any, where: str, maximum: int) -> str:
     if not isinstance(value, str) or not 0 < len(value) <= maximum:
         raise AgentCardError(f"{where} must be text of at most {maximum} characters")
-    if any(
-        unicodedata.category(character) in FORBIDDEN_CATEGORIES for character in value
-    ):
+    if not is_plain_text(value):
         raise AgentCardError(f"{where} contains control or invisible characters")
     return value
 

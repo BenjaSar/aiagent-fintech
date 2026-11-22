@@ -241,7 +241,9 @@ contract FintechModularAccountTest {
         address[] memory targets = new address[](1);
         targets[0] = address(target);
         VM.prank(account);
-        FintechModularAccount(payable(account)).installModule(4, address(policyHook), abi.encode(targets, rules));
+        address[] memory payees = new address[](0);
+        FintechModularAccount(payable(account))
+            .installModule(4, address(policyHook), abi.encode(targets, rules, payees, false));
     }
 
     function quorumSignedSessionOperation() private view returns (PackedUserOperation memory operation) {

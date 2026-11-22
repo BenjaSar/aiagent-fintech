@@ -2,6 +2,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+NATIVE_ASSET = "0x" + "00" * 20
 SYMBOL_PATTERN = re.compile(r"[A-Za-z0-9]{1,12}")
 LABEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
 MAXIMUM_DECIMALS = 36
@@ -47,6 +48,12 @@ class DisplayCatalog:
         for label in self.labels.values():
             if not LABEL_PATTERN.fullmatch(label):
                 raise DisplayCatalogError("a label must be short plain text")
+
+
+def display_of(catalog: DisplayCatalog, asset: str) -> AssetDisplay | None:
+    if asset == NATIVE_ASSET:
+        return catalog.native
+    return catalog.tokens.get(asset)
 
 
 def format_units(amount: int, decimals: int) -> str:

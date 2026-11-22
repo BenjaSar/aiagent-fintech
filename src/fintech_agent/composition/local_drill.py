@@ -8,6 +8,8 @@ from fintech_agent.adapters.foundry_toolkit import (
     FoundryError,
     FunctionCall,
 )
+from fintech_agent.application.agent_lifecycle import LifecycleError
+from fintech_agent.application.agent_retirement import RetirementError
 from fintech_agent.application.session_rotation import RotationFailedError
 from fintech_agent.application.sign_user_operation import (
     QuorumUnavailableError,
@@ -32,24 +34,32 @@ from fintech_agent.composition.drill_toolbox import (
     new_key,
 )
 from fintech_agent.composition.enclave_drill import EnclaveChecks
+from fintech_agent.composition.fleet_drill import FleetChecks, FleetSetup
 from fintech_agent.composition.local_enclaves import (
+    EnclaveSet,
     build_signing_setup,
     load_public_group,
 )
 from fintech_agent.composition.policy_drill import PolicyChecks
 from fintech_agent.composition.rotation_drill import RotationChecks, RotationSetup
-from fintech_agent.composition.rotation_local import FleetConfiguration
+from fintech_agent.composition.rotation_local import (
+    EnclaveFleetError,
+    FleetConfiguration,
+)
 from fintech_agent.composition.sanctions_drill import SanctionsChecks
 from fintech_agent.domain.user_operation import UserOperation
 
 SESSION_LIFETIME_SECONDS = 86_400
 TIME_BYTES = 6
-STEP_COUNT = 27
+STEP_COUNT = 46
 EXPECTED_FAILURES = (
     FoundryError,
     BundlerRpcError,
     SigningFailedError,
     RotationFailedError,
+    LifecycleError,
+    RetirementError,
+    EnclaveFleetError,
     OSError,
     KeyError,
     ValueError,
@@ -75,7 +85,15 @@ class LocalDrill:
             self._toolbox,
             RotationSetup(
                 FleetConfiguration(
-                    environment.rotation_directory, environment.enclave_script
+                    environment.enclave_sets_directory, environment.enclave_script
+                )
+            ),
+        )
+        self._fleet = FleetChecks(
+            self._toolbox,
+            FleetSetup(
+                FleetConfiguration(
+                    environment.enclave_sets_directory, environment.enclave_script
                 )
             ),
         )
@@ -162,6 +180,82 @@ class LocalDrill:
                 self._rotation.old_key_is_dead_and_new_key_works,
             ),
             (
+                "a treasury and two agent accounts hold separate, funded authorities",
+                self._fleet.treasury_and_two_agents_are_provisioned,
+            ),
+            (
+                "one agent cannot use another agent's key, policy or window",
+                self._fleet.agents_cannot_use_each_others_authority,
+            ),
+            (
+                "an agent cannot spend more than it was funded, even inside its cap",
+                self._fleet.an_agent_cannot_spend_more_than_it_was_funded,
+            ),
+            (
+                "every agent runs under an approval bound to its definition and key",
+                self._fleet.every_agent_runs_under_a_bound_approval,
+            ),
+            (
+                "a candidate that fails evaluation never reaches an approval",
+                self._fleet.a_candidate_that_fails_evaluation_never_reaches_an_approval,
+            ),
+            (
+                "a generated definition beyond its task never becomes an authority",
+                self._fleet.an_overstepping_proposal_never_becomes_an_authority,
+            ),
+            (
+                "a payment agent can only pay an approved payee",
+                self._fleet.a_payment_agent_can_only_pay_an_approved_payee,
+            ),
+            (
+                "a payment agent cannot attach call data to a payment",
+                self._fleet.a_payment_agent_cannot_attach_call_data,
+            ),
+            (
+                "an agent's runtime pays an approved payee, once, and nothing else",
+                self._fleet.the_runtime_pays_an_approved_payee_once,
+            ),
+            (
+                "an interaction trace reconstructs a multi-agent payment sequence",
+                self._fleet.the_trace_reconstructs_a_multi_agent_sequence,
+            ),
+            (
+                "a failing candidate is iterated inside a bounded budget",
+                self._fleet.a_failing_candidate_is_iterated_inside_its_budget,
+            ),
+            (
+                "an iteration that would widen authority is escalated, not installed",
+                self._fleet.a_widening_iteration_is_escalated_to_the_owner,
+            ),
+            (
+                "a session renews on schedule without a human, a widened one never does",
+                self._fleet.a_session_renews_on_schedule_without_a_human,
+            ),
+            (
+                "three agents share one enclave set as separate tenants",
+                self._fleet.the_fleet_shares_one_enclave_set,
+            ),
+            (
+                "a fleet halt stops every agent with the company offline (I-12)",
+                self._fleet.a_fleet_halt_stops_every_agent,
+            ),
+            (
+                "a halted agent is still revoked and the fleet recovered by its owner",
+                self._fleet.a_halted_agent_can_still_be_revoked_and_recovered,
+            ),
+            (
+                "revoking one agent leaves the other paying and the treasury intact",
+                self._fleet.revoking_one_agent_leaves_the_other_working,
+            ),
+            (
+                "a retired agent keeps no key, no allowance and no enclave tenancy",
+                self._fleet.a_retired_agent_keeps_nothing,
+            ),
+            (
+                "an analysis agent is approved and holds no authority at all",
+                self._fleet.an_analysis_agent_is_approved_and_holds_nothing,
+            ),
+            (
                 "owner installs social recovery with three user-chosen guardians",
                 self._install_recovery,
             ),
@@ -205,7 +299,7 @@ class LocalDrill:
         toolbox = self._toolbox
         foundry = self._environment.foundry
         contracts, actors = toolbox.contracts, toolbox.actors
-        group = load_public_group(self._environment.enclave_root)
+        group = load_public_group(EnclaveSet(self._environment.enclave_root))
         valid_until = toolbox.chain_time() + SESSION_LIFETIME_SECONDS
         toolbox.session_valid_until = valid_until
         install_data = (
@@ -329,7 +423,7 @@ class LocalDrill:
         self._environment.halt_enclave(self._toolbox.enclave_root, 2)
         pings_before = toolbox.pings()
         try:
-            SignUserOperation(build_signing_setup(self._toolbox.enclave_root)).execute(
+            SignUserOperation(build_signing_setup(self._toolbox.enclaves)).execute(
                 SigningRequest(bytes(32))
             )
         except QuorumUnavailableError as halted:

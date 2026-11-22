@@ -326,3 +326,88 @@ def test_decimals_and_labels_and_addresses_are_validated() -> None:
         DisplayCatalog(native, labels={TARGET: "Vault \u202e"})
     with pytest.raises(DisplayCatalogError):
         DisplayCatalog(native, labels={TARGET.upper().replace("0X", "0x"): "Vault"})
+
+
+def payment_screen(
+    payees: frozenset[str] = frozenset({TARGET}),
+    catalog: DisplayCatalog = LABELLED,
+) -> ApprovalScreen:
+    policy = replace(build_policy(), payments_only=True, allowed_payees=payees)
+    return present(policy, catalog=catalog)
+
+
+def test_a_payment_screen_promises_payments_only() -> None:
+    text = " ".join(payment_screen().permitted)
+    assert "with no call data attached" in text
+    assert "Pay only the 1 approved payee listed below" in text
+    assert "cannot approve" in text
+    assert "any function, with any data" not in text
+
+
+def test_a_payment_screen_lists_its_payees() -> None:
+    screen = payment_screen()
+    assert [(line.address, line.label) for line in screen.payee_lines] == [
+        (TARGET, "DeFi Yield Vault")
+    ]
+    assert not any("payee" in key for key in screen.required_acknowledgements)
+
+
+def test_an_unlabelled_payee_needs_an_acknowledgement() -> None:
+    screen = payment_screen(frozenset({TARGET, STRANGER}))
+    assert f"{WarningCode.UNLABELLED_PAYEE.value}:{STRANGER}" in (
+        screen.required_acknowledgements
+    )
+    assert "digit by digit" in " ".join(warning.text for warning in screen.warnings)
+
+
+def test_a_payment_screen_does_not_warn_about_a_target_that_is_not_a_payee() -> None:
+    catalog = DisplayCatalog(AssetDisplay("ETH", 18), {TOKEN: AssetDisplay("USDT", 6)})
+    keys = payment_screen(frozenset({TARGET}), catalog).required_acknowledgements
+    assert not any(key.startswith(WarningCode.UNLABELLED_TARGET.value) for key in keys)
+    assert f"{WarningCode.UNLABELLED_PAYEE.value}:{TARGET}" in keys
+
+
+def test_a_payments_only_policy_without_payees_grants_nothing() -> None:
+    screen = payment_screen(frozenset())
+    assert screen.permitted == (
+        "Nothing: a payments-only session needs both a limit and a payee.",
+    )
+    assert screen.payee_lines == ()
+
+
+def test_the_payment_text_shows_the_payees() -> None:
+    text = render_text(payment_screen())
+    assert "It may pay only these addresses:" in text
+    assert TARGET in text
+    assert "DeFi Yield Vault" in text
+
+
+def test_a_payment_policy_and_an_ordinary_one_have_different_digests() -> None:
+    ordinary = present().policy_digest
+    assert payment_screen().policy_digest != ordinary
+
+
+def test_a_payment_screen_counts_its_payees_in_words() -> None:
+    assert "the 1 approved payee listed below" in " ".join(payment_screen().permitted)
+    two = payment_screen(frozenset({TARGET, STRANGER}))
+    assert "the 2 approved payees listed below" in " ".join(two.permitted)
+
+
+def test_a_payment_screen_replaces_the_allowance_caveat() -> None:
+    screen = payment_screen()
+    caveats = " ".join(screen.caveats)
+    assert "cannot create an allowance" in caveats
+    assert "allowance you gave it earlier" not in caveats
+    assert "can receive your money" in caveats
+    assert "allowance you gave it earlier" in " ".join(present().caveats)
+
+
+def test_a_payment_screen_does_not_warn_about_value_attached_to_calls() -> None:
+    keys = payment_screen().required_acknowledgements
+    assert not any(
+        key.startswith(WarningCode.NATIVE_VALUE_TO_TARGETS.value) for key in keys
+    )
+    ordinary = present().required_acknowledgements
+    assert any(
+        key.startswith(WarningCode.NATIVE_VALUE_TO_TARGETS.value) for key in ordinary
+    )

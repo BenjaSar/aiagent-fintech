@@ -13,6 +13,11 @@ from fintech_agent.application.enclave_node import (
     EnclaveNode,
 )
 from fintech_agent.application.enclave_service import EnclaveService, ServiceParts
+from fintech_agent.application.enclave_tenancy import (
+    PRIMARY_TENANT,
+    TenancyParts,
+    TenantedEnclave,
+)
 from fintech_agent.application.key_share_record import KeyShareRecord
 from fintech_agent.application.ports import (
     AttestationEvidence,
@@ -77,6 +82,19 @@ def record_of(identifier: int) -> KeyShareRecord:
 
 def build_node(identifier: int) -> EnclaveNode:
     return EnclaveNode(record_of(identifier), permissive_dependencies())
+
+
+class SingleTenant:
+    def __init__(self, token: bytes, tenant: str = PRIMARY_TENANT) -> None:
+        self._token = token
+        self._tenant = tenant
+
+    def token_of(self, tenant: str) -> bytes:
+        return self._token if tenant == self._tenant else b""
+
+
+def tenanted(service: EnclaveService, token: bytes) -> TenantedEnclave:
+    return TenantedEnclave(TenancyParts(SingleTenant(token), lambda _: service))
 
 
 def service_for(node: EnclaveNode) -> EnclaveService:

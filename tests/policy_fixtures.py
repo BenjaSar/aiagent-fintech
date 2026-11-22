@@ -46,10 +46,12 @@ def build_policy() -> SessionPolicy:
         allowed_targets=frozenset({TARGET}),
         rules=(AssetRule(NATIVE_ASSET, ETHER), AssetRule(TOKEN, TOKEN_CAP)),
         allowed_paymasters=frozenset({PAYMASTER}),
+        allowed_payees=frozenset(),
         valid_after=NOW - 1_000,
         valid_until=NOW + 1_000,
         window_seconds=86_400,
         maximum_gas_cost=10**17,
+        payments_only=False,
     )
 
 

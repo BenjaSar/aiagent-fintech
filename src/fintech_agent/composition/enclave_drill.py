@@ -8,9 +8,7 @@ from fintech_agent.application.sign_user_operation import (
     SignUserOperation,
 )
 from fintech_agent.composition.drill_toolbox import (
-    ENTRY_POINT,
     VALIDATOR_MODULE_TYPE,
-    ZERO_ADDRESS,
     DrillFailureError,
     DrillToolbox,
     ExecutionRequest,
@@ -20,12 +18,13 @@ from fintech_agent.composition.local_enclaves import (
     issue_session_policy,
 )
 from fintech_agent.composition.policy_drill import NATIVE_CAP
-from fintech_agent.domain.session_policy import AssetRule, SessionPolicy
+from fintech_agent.composition.session_policies import (
+    PolicyParts,
+    build_session_policy,
+)
+from fintech_agent.domain.session_policy import SessionPolicy
 from fintech_agent.domain.user_operation import PaymasterFields, UserOperation
-from fintech_agent.domain.user_operation_hash import HashingDomain
 
-WINDOW_SECONDS = 86_400
-MAXIMUM_GAS_COST = 10**17
 OVER_CAP_VALUE = 3 * NATIVE_CAP // 2
 EXCESSIVE_CALL_GAS = 10**9
 STRANGER_ADDRESS = "0x" + "de" * 20
@@ -48,11 +47,11 @@ class EnclaveChecks:
     def policy_is_issued(self) -> str:
         toolbox = self._toolbox
         policy = self._policy()
-        root = toolbox.enclave_root
-        issue_session_policy(root, policy)
+        enclaves = toolbox.enclaves
+        issue_session_policy(enclaves, policy)
         toolbox.active_policy = policy
         try:
-            issue_session_policy(root, policy)
+            issue_session_policy(enclaves, policy)
         except EnclaveRefusedError as refusal:
             return (
                 f"installed on three enclaves; a second issuance is refused: {refusal}"
@@ -133,7 +132,7 @@ class EnclaveChecks:
 
     def _require_refusal(self, violation: Violation) -> None:
         toolbox = self._toolbox
-        signing = SignUserOperation(build_signing_setup(toolbox.enclave_root))
+        signing = SignUserOperation(build_signing_setup(toolbox.enclaves))
         presented = violation.operation
         message = toolbox.operation_hash(violation.hashed or presented)
         operation = None if violation.blind else presented
@@ -159,21 +158,9 @@ class EnclaveChecks:
 
     def _policy(self) -> SessionPolicy:
         toolbox = self._toolbox
-        contracts, actors = toolbox.contracts, toolbox.actors
-        return SessionPolicy(
-            domain=HashingDomain(toolbox.chain_id(), _normal(ENTRY_POINT)),
-            account=_normal(actors.account),
-            validator=_normal(contracts.validator),
-            hook=_normal(contracts.policy_hook),
-            allowed_targets=frozenset({_normal(contracts.target)}),
-            rules=(AssetRule(ZERO_ADDRESS, NATIVE_CAP),),
-            allowed_paymasters=frozenset({_normal(contracts.paymaster)}),
-            valid_after=0,
-            valid_until=toolbox.session_valid_until,
-            window_seconds=WINDOW_SECONDS,
-            maximum_gas_cost=MAXIMUM_GAS_COST,
+        return build_session_policy(
+            toolbox,
+            PolicyParts(
+                toolbox.actors.account, NATIVE_CAP, toolbox.session_valid_until
+            ),
         )
-
-
-def _normal(address: str) -> str:
-    return address.lower()

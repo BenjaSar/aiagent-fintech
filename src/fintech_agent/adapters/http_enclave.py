@@ -1,4 +1,3 @@
-import hmac
 import json
 import urllib.error
 import urllib.request
@@ -8,6 +7,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 from fintech_agent.application.enclave_service import EnclaveService
+from fintech_agent.application.enclave_tenancy import (
+    PRIMARY_TENANT,
+    TenantedEnclave,
+    TenantRequest,
+    UnknownTenantError,
+)
 from fintech_agent.application.key_generation_ports import (
     CeremonyRequest,
     ConfirmRequest,
@@ -132,6 +137,7 @@ def _abandon_route(service: EnclaveService, payload: Payload) -> dict[str, Any]:
     return {}
 
 
+FORGET_PATH = "/tenant/forget"
 ROUTES: dict[str, Route] = {
     "/commitments": _commitments_route,
     "/signature-share": _share_route,
@@ -148,32 +154,28 @@ ROUTES: dict[str, Route] = {
 
 @dataclass(frozen=True)
 class ServedEnclave:
-    service: EnclaveService
-    token: bytes
+    enclave: TenantedEnclave
 
 
 def build_server(served: ServedEnclave, port: int) -> HTTPServer:
     class Handler(_EnclaveHandler):
-        enclave = served
+        served_enclave = served
 
     return HTTPServer((LOOPBACK_ADDRESS, port), Handler)
 
 
 class _EnclaveHandler(BaseHTTPRequestHandler):
-    enclave: ServedEnclave
+    served_enclave: ServedEnclave
 
     def do_POST(self) -> None:
         length = self._content_length()
         body = self.rfile.read(length) if length <= MAXIMUM_BODY_LENGTH else b""
-        route = ROUTES.get(self.path)
-        if not self._is_authorized():
-            self._reply(STATUS_UNAUTHORIZED, {"error": "unauthorized"})
-        elif route is None:
+        if self.path != FORGET_PATH and self.path not in ROUTES:
             self._reply(STATUS_NOT_FOUND, {"error": "unknown route"})
         elif length > MAXIMUM_BODY_LENGTH:
             self._reply(STATUS_TOO_LARGE, {"error": "body too large"})
         else:
-            self._run(route, body)
+            self._run(body)
 
     def _content_length(self) -> int:
         try:
@@ -184,19 +186,33 @@ class _EnclaveHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *arguments: Any) -> None:
         return None
 
-    def _run(self, route: Route, body: bytes) -> None:
+    def _run(self, body: bytes) -> None:
         try:
             payload = json.loads(body or b"{}")
-            self._reply(STATUS_OK, route(self.enclave.service, payload))
+            requested = self._requested_tenant(payload)
+            self._reply(STATUS_OK, self._served(requested, payload))
+        except UnknownTenantError:
+            self._reply(STATUS_UNAUTHORIZED, {"error": "unauthorized"})
         except EnclaveRefusedError as refusal:
             self._reply(STATUS_REFUSED, {"error": str(refusal)})
         except (ValueError, KeyError, TypeError) as malformed:
             self._reply(STATUS_BAD_REQUEST, {"error": str(malformed)})
 
-    def _is_authorized(self) -> bool:
-        presented = self.headers.get("Authorization", "").encode()
-        expected = b"Bearer " + self.enclave.token
-        return hmac.compare_digest(presented, expected)
+    def _served(self, request: TenantRequest, payload: Payload) -> dict[str, Any]:
+        tenanted = self.served_enclave.enclave
+        service = tenanted.service_for(request)
+        if self.path == FORGET_PATH:
+            service.forget()
+            tenanted.forget(request.tenant)
+            return {}
+        return ROUTES[self.path](service, payload)
+
+    def _requested_tenant(self, payload: Payload) -> TenantRequest:
+        presented = self.headers.get("Authorization", "")
+        return TenantRequest(
+            str(payload.get("tenant", PRIMARY_TENANT)),
+            presented.removeprefix("Bearer ").encode(),
+        )
 
     def _reply(self, status: int, body: dict[str, Any]) -> None:
         encoded = json.dumps(body).encode()
@@ -211,6 +227,7 @@ class _EnclaveHandler(BaseHTTPRequestHandler):
 class HttpEndpoint:
     base_url: str
     token: bytes
+    tenant: str = PRIMARY_TENANT
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
 
@@ -231,7 +248,7 @@ class _HttpClient:
     def _post(self, path: str, payload: Payload) -> dict[str, Any]:
         request = urllib.request.Request(
             self._endpoint.base_url + path,
-            data=json.dumps(payload).encode(),
+            data=json.dumps({**payload, "tenant": self._endpoint.tenant}).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + self._endpoint.token.decode(),
@@ -286,6 +303,11 @@ class HttpEnclaveGateway(_HttpClient):
 class HttpPolicyGateway(_HttpClient):
     def issue_policy(self, policy: SessionPolicy) -> None:
         self._post("/policy", {"policy": encode_policy(policy)})
+
+
+class HttpTenantGateway(_HttpClient):
+    def forget(self) -> None:
+        self._post(FORGET_PATH, {})
 
 
 class HttpKeyGenerationGateway(_HttpClient):

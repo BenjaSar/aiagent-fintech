@@ -40,10 +40,12 @@ class SessionPolicy:
     allowed_targets: frozenset[str]
     rules: tuple[AssetRule, ...]
     allowed_paymasters: frozenset[str]
+    allowed_payees: frozenset[str]
     valid_after: int
     valid_until: int
     window_seconds: int
     maximum_gas_cost: int
+    payments_only: bool
 
     def __post_init__(self) -> None:
         addresses = {
@@ -53,9 +55,10 @@ class SessionPolicy:
             self.domain.entry_point,
             *self.allowed_targets,
             *self.allowed_paymasters,
+            *self.allowed_payees,
             *(rule.asset for rule in self.rules),
         }
-        if not all(_is_normalized_address(address) for address in addresses):
+        if not all(is_normalized_address(address) for address in addresses):
             raise PolicyViolationError(
                 "every address must be lowercase 0x-prefixed hex"
             )
@@ -66,6 +69,10 @@ class SessionPolicy:
             raise PolicyViolationError("every cap must be positive")
         if self.window_seconds <= 0 or self.valid_until <= self.valid_after:
             raise PolicyViolationError("the time window is empty")
+        if self.allowed_payees and not self.payments_only:
+            raise PolicyViolationError(
+                "payees are only meaningful in a payments-only policy"
+            )
 
     def cap_of(self, asset: str) -> int | None:
         for rule in self.rules:
@@ -86,7 +93,7 @@ class Movement:
     amount: int
 
 
-def _is_normalized_address(address: str) -> bool:
+def is_normalized_address(address: str) -> bool:
     body = address.removeprefix("0x")
     return (
         address.startswith("0x")
@@ -150,9 +157,13 @@ def _movements_of(policy: SessionPolicy, execution: Execution) -> list[Movement]
     if target in policy.forbidden_targets:
         raise PolicyViolationError(f"the target {target} is forbidden")
     if policy.cap_of(target) is not None:
-        return [_token_movement(execution)]
+        return [_token_movement(policy, execution)]
     if target not in policy.allowed_targets:
         raise PolicyViolationError(f"the target {target} is not allowed")
+    if policy.payments_only and execution.data:
+        raise PolicyViolationError("a payment cannot carry call data")
+    if policy.payments_only and target not in policy.allowed_payees:
+        raise PolicyViolationError(f"the payee {target} is not allowed")
     if execution.value == 0:
         return []
     if policy.cap_of(NATIVE_ASSET) is None:
@@ -160,7 +171,7 @@ def _movements_of(policy: SessionPolicy, execution: Execution) -> list[Movement]
     return [Movement(NATIVE_ASSET, execution.value)]
 
 
-def _token_movement(execution: Execution) -> Movement:
+def _token_movement(policy: SessionPolicy, execution: Execution) -> Movement:
     data = execution.data
     selector = data[:SELECTOR_BYTES]
     if execution.value != 0:
@@ -172,9 +183,19 @@ def _token_movement(execution: Execution) -> Movement:
         raise PolicyViolationError("only transfer and approve calls are allowed")
     if any(data[SELECTOR_BYTES : SELECTOR_BYTES + WORD_BYTES - ADDRESS_BYTES]):
         raise PolicyViolationError("the token call names a malformed address")
+    recipient = _recipient_of(data)
+    if policy.payments_only and selector != TOKEN_TRANSFER_SELECTOR:
+        raise PolicyViolationError("a payments-only policy cannot approve spending")
+    if policy.payments_only and recipient not in policy.allowed_payees:
+        raise PolicyViolationError(f"the payee {recipient} is not allowed")
     return Movement(
         execution.target, int.from_bytes(data[SELECTOR_BYTES + WORD_BYTES :], "big")
     )
+
+
+def _recipient_of(data: bytes) -> str:
+    start = SELECTOR_BYTES + WORD_BYTES - ADDRESS_BYTES
+    return "0x" + data[start : SELECTOR_BYTES + WORD_BYTES].hex()
 
 
 def _merge(movements: list[Movement]) -> tuple[Movement, ...]:

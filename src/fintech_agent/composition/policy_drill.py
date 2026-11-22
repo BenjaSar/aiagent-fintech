@@ -36,10 +36,12 @@ class PolicyChecks:
         toolbox = self._toolbox
         settings = toolbox.environment.foundry.encode_arguments(
             FunctionCall(
-                "f(address[],(address,uint256)[])",
+                "f(address[],(address,uint256)[],address[],bool)",
                 (
                     f"[{toolbox.contracts.target}]",
                     f"[({ZERO_ADDRESS},{NATIVE_CAP})]",
+                    "[]",
+                    "false",
                 ),
             )
         )

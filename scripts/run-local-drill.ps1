@@ -29,9 +29,9 @@ Stop-Everything
 if (Test-Path $enclaveRoot) {
     Remove-Item -Recurse -Force $enclaveRoot
 }
-$rotationRoot = Join-Path (Join-Path $root '.local') 'rotations'
-if (Test-Path $rotationRoot) {
-    Remove-Item -Recurse -Force $rotationRoot
+$enclaveSetsRoot = Join-Path (Join-Path $root '.local') 'enclave-sets'
+if (Test-Path $enclaveSetsRoot) {
+    Remove-Item -Recurse -Force $enclaveSetsRoot
 }
 
 try {

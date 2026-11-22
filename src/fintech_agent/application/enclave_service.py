@@ -72,6 +72,11 @@ class EnclaveService:
         outcome = self._ceremony_enclave().confirm(request)
         self._signer = EnclaveNode(outcome.record, self._dependencies)
 
+    def forget(self) -> None:
+        self._signer = None
+        self._ceremony = None
+        self._policy_issuer = None
+
     def abandon_ceremony(self, ceremony_identifier: bytes) -> None:
         if self._ceremony is not None:
             self._ceremony.abandon(ceremony_identifier)

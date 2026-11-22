@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from enum import Enum
 
 from .approval_display import (
-    AssetDisplay,
     DisplayCatalog,
+    display_of,
     format_duration,
     format_units,
 )
@@ -29,6 +29,7 @@ class NarrowingError(ValueError):
 
 class WarningCode(Enum):
     UNLABELLED_TARGET = "unlabelled-target"
+    UNLABELLED_PAYEE = "unlabelled-payee"
     UNVERIFIED_ASSET = "unverified-asset"
     NATIVE_VALUE_TO_TARGETS = "native-value-to-targets"
     LONG_SESSION = "long-session"
@@ -76,6 +77,13 @@ class TargetLine:
 
 
 @dataclass(frozen=True)
+class ScreenLines:
+    assets: tuple[AssetLine, ...]
+    targets: tuple[TargetLine, ...]
+    payees: tuple[TargetLine, ...]
+
+
+@dataclass(frozen=True)
 class ApprovalScreen:
     policy: SessionPolicy
     policy_digest: str
@@ -85,6 +93,7 @@ class ApprovalScreen:
     window_length: str
     asset_lines: tuple[AssetLine, ...]
     target_lines: tuple[TargetLine, ...]
+    payee_lines: tuple[TargetLine, ...]
     gas_cap_text: str
     sponsors: tuple[str, ...]
     permitted: tuple[str, ...]
@@ -137,6 +146,13 @@ CAVEAT_STATEMENTS = (
         "earlier, outside these caps."
     ),
 )
+PAYMENT_CAVEAT_STATEMENTS = (
+    (
+        "This session cannot call a contract and cannot create an allowance, so "
+        "nothing it starts can outlive its end time."
+    ),
+    "Approving a payee means that address can receive your money.",
+)
 CONTROL_STATEMENT = (
     "You can end this session at any time with your owner key alone, without "
     "anyone else."
@@ -153,10 +169,10 @@ def policy_digest(policy: SessionPolicy) -> str:
 def describe_policy(presentation: PolicyPresentation) -> ApprovalScreen:
     policy = presentation.policy
     _refuse_unapprovable(presentation)
-    asset_lines = tuple(_asset_line(presentation, rule) for rule in policy.rules)
-    target_lines = tuple(
-        TargetLine(address, presentation.catalog.labels.get(address))
-        for address in sorted(policy.allowed_targets)
+    lines = ScreenLines(
+        tuple(_asset_line(presentation, rule) for rule in policy.rules),
+        _named(presentation, policy.allowed_targets),
+        _named(presentation, policy.allowed_payees),
     )
     return ApprovalScreen(
         policy=policy,
@@ -165,15 +181,31 @@ def describe_policy(presentation: PolicyPresentation) -> ApprovalScreen:
         ends_at=_timestamp(policy.valid_until),
         session_length=format_duration(policy.valid_until - policy.valid_after),
         window_length=format_duration(policy.window_seconds),
-        asset_lines=asset_lines,
-        target_lines=target_lines,
+        asset_lines=lines.assets,
+        target_lines=lines.targets,
+        payee_lines=lines.payees,
         gas_cap_text=_gas_text(presentation),
         sponsors=tuple(sorted(policy.allowed_paymasters)),
-        permitted=_permitted(presentation, asset_lines, target_lines),
+        permitted=_permitted(presentation, lines),
         never=NEVER_STATEMENTS,
-        caveats=CAVEAT_STATEMENTS,
+        caveats=_caveats(policy),
         control=CONTROL_STATEMENT,
-        warnings=_warnings(presentation, asset_lines, target_lines),
+        warnings=_warnings(presentation, lines),
+    )
+
+
+def _caveats(policy: SessionPolicy) -> tuple[str, ...]:
+    if policy.payments_only:
+        return PAYMENT_CAVEAT_STATEMENTS
+    return CAVEAT_STATEMENTS
+
+
+def _named(
+    presentation: PolicyPresentation, addresses: frozenset[str]
+) -> tuple[TargetLine, ...]:
+    labels = presentation.catalog.labels
+    return tuple(
+        TargetLine(address, labels.get(address)) for address in sorted(addresses)
     )
 
 
@@ -230,15 +262,9 @@ def _refuse_unapprovable(presentation: PolicyPresentation) -> None:
             )
 
 
-def _display_of(presentation: PolicyPresentation, asset: str) -> AssetDisplay | None:
-    if asset == NATIVE_ASSET:
-        return presentation.catalog.native
-    return presentation.catalog.tokens.get(asset)
-
-
 def _asset_line(presentation: PolicyPresentation, rule: AssetRule) -> AssetLine:
     policy = presentation.policy
-    display = _display_of(presentation, rule.asset)
+    display = display_of(presentation.catalog, rule.asset)
     windows = -(-(policy.valid_until - policy.valid_after) // policy.window_seconds)
     if display is None:
         return AssetLine(
@@ -267,17 +293,15 @@ def _timestamp(seconds: int) -> str:
     return datetime.fromtimestamp(seconds, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def _permitted(
-    presentation: PolicyPresentation,
-    asset_lines: tuple[AssetLine, ...],
-    target_lines: tuple[TargetLine, ...],
-) -> tuple[str, ...]:
+def _permitted(presentation: PolicyPresentation, lines: ScreenLines) -> tuple[str, ...]:
     policy = presentation.policy
+    if policy.payments_only:
+        return _payment_statements(presentation, lines)
     window = format_duration(policy.window_seconds)
     statements: list[str] = []
-    for line in asset_lines:
-        statements.append(_asset_statement(line, window, bool(target_lines)))
-    for target in target_lines:
+    for line in lines.assets:
+        statements.append(_asset_statement(line, window, bool(lines.targets)))
+    for target in lines.targets:
         name = target.label or "an unlabelled contract"
         statements.append(
             f"Call any function, with any data, on {name} ({target.address}). "
@@ -288,6 +312,38 @@ def _permitted(
             "Nothing: the policy grants no spending and no contract calls."
         )
     return tuple(statements)
+
+
+def _payment_statements(
+    presentation: PolicyPresentation, lines: ScreenLines
+) -> tuple[str, ...]:
+    policy = presentation.policy
+    if not lines.assets or not lines.payees:
+        return ("Nothing: a payments-only session needs both a limit and a payee.",)
+    window = format_duration(policy.window_seconds)
+    statements = [_payment_statement(line, window) for line in lines.assets]
+    statements.append(
+        f"Pay only the {_payee_count(lines)} listed below, and nothing else. It cannot "
+        "call a contract function and it cannot approve spending."
+    )
+    return tuple(statements)
+
+
+def _payee_count(lines: ScreenLines) -> str:
+    count = len(lines.payees)
+    return f"{count} approved payee" if count == 1 else f"{count} approved payees"
+
+
+def _payment_statement(line: AssetLine, window: str) -> str:
+    if line.asset == NATIVE_ASSET:
+        return (
+            f"Send up to {line.cap_text} of native currency per rolling {window}, "
+            "with no call data attached."
+        )
+    return (
+        f"Transfer up to {line.cap_text} per rolling {window}. It cannot approve "
+        f"{line.symbol} spending, so no allowance can outlive this session."
+    )
 
 
 def _asset_statement(line: AssetLine, window: str, has_targets: bool) -> str:
@@ -307,14 +363,24 @@ def _asset_statement(line: AssetLine, window: str, has_targets: bool) -> str:
     )
 
 
+def _warns_about_value(policy: SessionPolicy, lines: ScreenLines) -> bool:
+    return bool(lines.targets) and not policy.payments_only
+
+
+def _unnamed_targets(
+    policy: SessionPolicy, lines: ScreenLines
+) -> tuple[TargetLine, ...]:
+    if policy.payments_only:
+        return ()
+    return lines.targets
+
+
 def _warnings(
-    presentation: PolicyPresentation,
-    asset_lines: tuple[AssetLine, ...],
-    target_lines: tuple[TargetLine, ...],
+    presentation: PolicyPresentation, lines: ScreenLines
 ) -> tuple[ApprovalWarning, ...]:
     policy = presentation.policy
     warnings: list[ApprovalWarning] = []
-    for line in asset_lines:
+    for line in lines.assets:
         if not line.verified:
             warnings.append(
                 ApprovalWarning(
@@ -324,7 +390,17 @@ def _warnings(
                     "in raw units and its name cannot be confirmed.",
                 )
             )
-    for target in target_lines:
+    for payee in lines.payees:
+        if payee.label is None:
+            warnings.append(
+                ApprovalWarning(
+                    WarningCode.UNLABELLED_PAYEE,
+                    payee.address,
+                    f"{payee.address} is not a known payee. Check the address "
+                    "digit by digit before approving.",
+                )
+            )
+    for target in _unnamed_targets(policy, lines):
         if target.label is None:
             warnings.append(
                 ApprovalWarning(
@@ -334,7 +410,7 @@ def _warnings(
                     "agent could approve unlimited spending through it.",
                 )
             )
-    if policy.cap_of(NATIVE_ASSET) is not None and target_lines:
+    if policy.cap_of(NATIVE_ASSET) is not None and _warns_about_value(policy, lines):
         warnings.append(
             ApprovalWarning(
                 WarningCode.NATIVE_VALUE_TO_TARGETS,
