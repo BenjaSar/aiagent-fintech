@@ -48,15 +48,15 @@ def main() -> int:
         enclave_sets_directory=REPOSITORY_ROOT / ".local" / "enclave-sets",
         enclave_script=REPOSITORY_ROOT / "scripts" / "run_enclave_node.py",
     )
-    results = LocalDrill(environment).run()
-    for result in results:
-        print(f"[{'PASS' if result.passed else 'FAIL'}] {result.name}")
-        print(f"        {result.detail}")
-    return (
-        0
-        if all(result.passed for result in results) and len(results) == STEP_COUNT
-        else 1
-    )
+    completed = 0
+    passed = 0
+    for result in LocalDrill(environment).results():
+        verdict = "PASS" if result.passed else "FAIL"
+        print(f"[{verdict}] {result.name}\n        {result.detail}", flush=True)
+        completed += 1
+        if result.passed:
+            passed += 1
+    return 0 if completed == STEP_COUNT and passed == STEP_COUNT else 1
 
 
 raise SystemExit(main())

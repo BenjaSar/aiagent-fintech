@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from fintech_agent.adapters.bundler_rpc import BundlerRpcError
@@ -10,6 +10,10 @@ from fintech_agent.adapters.foundry_toolkit import (
 )
 from fintech_agent.application.agent_lifecycle import LifecycleError
 from fintech_agent.application.agent_retirement import RetirementError
+from fintech_agent.application.ports import (
+    EnclaveRefusedError,
+    EnclaveUnavailableError,
+)
 from fintech_agent.application.session_rotation import RotationFailedError
 from fintech_agent.application.sign_user_operation import (
     QuorumUnavailableError,
@@ -60,6 +64,8 @@ EXPECTED_FAILURES = (
     LifecycleError,
     RetirementError,
     EnclaveFleetError,
+    EnclaveRefusedError,
+    EnclaveUnavailableError,
     OSError,
     KeyError,
     ValueError,
@@ -101,14 +107,12 @@ class LocalDrill:
         self._held_operation: UserOperation | None = None
         self._new_owner_key: str | None = None
 
-    def run(self) -> list[DrillResult]:
-        results: list[DrillResult] = []
+    def results(self) -> Iterator[DrillResult]:
         for name, action in self._steps():
             result = self._attempt(name, action)
-            results.append(result)
+            yield result
             if not result.passed:
-                break
-        return results
+                return
 
     def _steps(self) -> list[tuple[str, Callable[[], str]]]:
         return [

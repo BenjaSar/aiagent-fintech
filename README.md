@@ -41,6 +41,11 @@ Two independent layers refuse bad operations. An enclave refuses to sign an oper
 | FROST, DKG, enclave logic | `src/fintech_agent/domain/frost`, `application/` | Key generation, two-round signing, enclave-side policy re-validation and spend ledger |
 | Enclave processes | `adapters/http_enclave.py`, `composition/local_enclaves.py` | Three loopback HTTP servers with DPAPI-sealed key shares |
 | Approval and rotation | `domain/policy_approval.py`, `application/session_rotation.py` | Plain-language policy screen; the rotation ceremony (new DKG, review, grant, verify, retire) |
+| Agent factory | `domain/agent_definition.py`, `tool_catalog.py`, `task_specification.py`, `agent_approval.py`, `application/agent_synthesis.py`, `agent_evaluation.py`, `policy_derivation.py`, `provenance_log.py` | Definitions and their digest, the reviewed tool catalog, the owner's task specification, the gate that refuses a proposal beyond it, derived policies, the evaluation bank, one owner approval bound to what it grants, and a hash-chained record |
+| Agent types | `domain/agent_definition.py` | Two types: a payment agent, which holds an account, a session key, approved payees and a budget, and an analysis agent, which holds none of them and can only read and report |
+| Agent runtime | `application/agent_runtime.py`, `agent_tools.py`, `payment_journal.py` | A bounded loop over a fixed tool set that pays an approved payee once per idempotency key, or reads and reports, and cannot reach a signer |
+| Fleet operations | `application/enclave_tenancy.py`, `halt_switch.py`, `interaction_trace.py`, `renewal_scheduler.py` | Several agents as isolated tenancies on one enclave set, a halt the enclaves enforce themselves, a causal trace across agents, and unattended renewal of unchanged authority |
+| Agent lifecycle | `application/agent_lifecycle.py`, `agent_development.py`, `session_schedule.py`, `agent_retirement.py` | A bounded development loop that may never widen authority, the expiry schedule, and a teardown that leaves no key, allowance or tenancy |
 | Agent access control | `domain/agent_card.py`, `domain/relationship_graph.py`, `application/agent_directory.py` | Agent Card checks, typosquat and poisoning defences, task-scoped ReBAC. Library only, not yet called by anything |
 | Drill | `composition/local_drill.py`, `scripts/run-local-drill.ps1` | The end-to-end script that exercises all of the above against a real chain and bundler |
 
@@ -155,14 +160,16 @@ test/          Foundry tests
 src/fintech_agent/
   domain/        pure logic: FROST, DKG, user operation hash, session policy,
                  approval screen, Agent Card, relationship graph, fleet identity,
-                 agent definition, tool catalog, task specification
+                 agent definition, tool catalog, task specification,
+                 agent approval, authority order
   application/   use cases and ports: signing, DKG, enclave node, policy
                  authorizer, rotation, agent directory, fleet ledger,
                  payee registry, policy derivation, provenance log,
                  agent runtime, agent tools, payment journal, agent synthesis,
                  agent evaluation, agent promotion, simulated settlement,
                  agent lifecycle, agent development, session schedule,
-                 agent retirement
+                 agent retirement, enclave tenancy, halt switch,
+                 interaction trace, renewal scheduler
   adapters/      DPAPI storage, X25519 channel, HTTP enclave, bundler RPC,
                  Foundry toolkit, Ed25519 card signatures
   composition/   local wiring and the drill
@@ -175,10 +182,10 @@ docs/          one write-up per task
 
 ## What is real, simulated or missing
 
-- **Real:** the contracts, the FROST maths and DKG, the on-chain signature check, enclave-side policy re-validation, the hook, the registry gate, rotation and recovery, a fleet of per-agent accounts with their own keys, caps and funded budgets, and a real bundler accepting operations.
+- **Real:** the contracts, the FROST maths and DKG, the on-chain signature check, enclave-side policy re-validation, the hook, the registry gate, rotation and recovery, a fleet of per-agent accounts with their own keys, caps and funded budgets, the enclave tenancies that keep those agents apart, the halt the enclaves enforce from their own storage, and a real bundler accepting operations.
 - **Simulated:** remote attestation (always "simulated"), enclave isolation (ordinary processes), the sanctions oracle (an open dev contract), the user in the rotation ceremony (a script), all keys.
 - **Not run:** Base Sepolia or any public chain; a bundler with ERC-7562 rule enforcement (Alto runs with safe mode off here); any audit; any measurement of the latency targets.
-- **Not built yet:** MCP tool servers, A2A serving, the x402 client, ERC-8004 identity, the halt control, any graphical approval screen, and the Phase 4 research agent. The Agent Card and ReBAC code exists but nothing calls it.
+- **Not built yet:** MCP tool servers, A2A serving, the x402 client, ERC-8004 identity, any graphical approval screen, and the Phase 4 research agent, whose trading strategies stay closed on [ADR-007](docs/ADR-007-stage-2-agent-types.md) E-5 — the analysis type built in T-5.10 reads this fleet's own payments and is not that agent. The Agent Card and ReBAC code exists but nothing calls it. Nothing drives the renewal scheduler on a timer, and the interaction trace is held in memory and is neither exported nor signed.
 
 ## Documentation
 
@@ -210,6 +217,9 @@ Each doc lists its own risks and limits; read them before relying on any part.
 ## Troubleshooting
 
 - **`[FAIL] ... outside its time window`:** the chain clock and the machine clock differ. Session start times need a margin before chain time (the drill uses 300 s).
-- **A port is busy or processes are left over:** run `scripts\stop-local-enclaves.ps1`, `stop-local-bundler.ps1` and `stop-local-chain.ps1`, then re-run the drill.
+- **A port is busy or processes are left over:** run `scripts\stop-local-enclaves.ps1`, `stop-local-bundler.ps1` and `stop-local-chain.ps1`, then re-run the drill. Never start the drill on top of a stack brought up by hand: it stops and wipes before it starts, but a chain, bundler or enclave left mid-life from an earlier session can still hold a port or a file while it does.
+- **`[FAIL] ... a session policy is already installed`:** the enclaves' sealed state is older than the chain, which happens when anvil is restarted without wiping `.local\enclaves`. The sealed state and the chain are one unit. Stop the enclaves first, then `Remove-Item -Recurse -Force .local\enclaves, .local\enclave-sets` and re-provision, or just run `scripts\run-local-drill.ps1`, which wipes both before it starts.
+- **`AlreadyProvisionedError: enclaves are already provisioned here`:** nothing is broken. Provisioning refuses to re-seal identities over sealed key shares, because the running enclaves would then hold shares for a group the coordinator no longer knows. Either skip the step, since the identities are already sealed, or stop the enclaves and remove the folder as above to start over.
+- **A drill log is empty or cannot be searched:** PowerShell's `*>` writes the file as UTF-16, so `Select-String` and `grep` find nothing in it, and `| Out-File` captures only stdout, so a traceback on stderr is lost. Redirect both streams instead: `.\scripts\run-local-drill.ps1 > .local\drill.log 2>&1`.
 - **`start-local-chain.ps1` hangs:** it stalls if its output is piped. Run it directly.
 - **Enclave start fails with a DPAPI error:** the sealed files belong to the Windows user that created them. Delete `.local\enclaves` and re-provision.
